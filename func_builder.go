@@ -67,7 +67,13 @@ func generateTopFunction(fn any, opt GenOptions) error {
 	outDir := filepath.Join(opt.OutputRoot, pkgName)
 	file := filepath.Join(outDir, strings.ToLower(simpleName)+"_func.go")
 	body := buildTopFunctionFileBodyWithNamesAndPC(pkgPath, pkgName, simpleName, fullName, typ, val.Pointer())
-	return EmitFile(file, pkgName, body)
+	if err := EmitFile(file, pkgName, body); err != nil {
+		return err
+	}
+	// 注册函数，并尝试生成/更新 load.go
+	registerFunction(pkgName, upperFirst(simpleName))
+	_ = generateLoadFile(pkgName, opt)
+	return nil
 }
 
 func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullName string, fnType reflect.Type, pc uintptr) string {
@@ -137,7 +143,7 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 	// 生成一个方法结构以适配 data.Method
 	typeName := upperFirst(funcName)
 	fmt.Fprintf(b, "type %sFunction struct{}\n\n", typeName)
-	
+
 	// 生成构造函数
 	fmt.Fprintf(b, "func New%sFunction() data.FuncStmt {\n\treturn &%sFunction{}\n}\n\n", typeName, typeName)
 	fmt.Fprintf(b, "func (h *%sFunction) Call(ctx data.Context) (data.GetValue, data.Control) {\n\n", typeName)
@@ -285,11 +291,11 @@ func typeToKindLabel(t reflect.Type) string {
 		}
 		return "interface"
 	}
-	
+
 	// 检查是否为指针类型（如 *struct）
 	if t.Kind() == reflect.Ptr && t.Elem().Kind() == reflect.Struct {
 		return "ptr_struct"
 	}
-	
+
 	return "interface"
 }

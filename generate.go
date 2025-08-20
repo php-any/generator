@@ -61,7 +61,7 @@ func GenerateFromConstructor(fn any, opt GenOptions) error {
 	// 标记为已生成
 	generatedTypes[typeKey] = true
 	generatedTypesMutex.Unlock()
-	
+
 	fmt.Fprintf(os.Stderr, "开始生成主类型: %s\n", typeKey)
 
 	structPtr := ret
@@ -112,7 +112,7 @@ func GenerateFromConstructor(fn any, opt GenOptions) error {
 		fmt.Fprintf(os.Stderr, "检查方法 %s.%s 的返回类型\n", typeName, n)
 		for oi := 0; oi < mt.NumOut(); oi++ {
 			outType := mt.Out(oi)
-			fmt.Fprintf(os.Stderr, "  返回值 %d: %s (Kind: %s, isPtrToStruct: %v)\n", 
+			fmt.Fprintf(os.Stderr, "  返回值 %d: %s (Kind: %s, isPtrToStruct: %v)\n",
 				oi, outType.String(), outType.Kind(), isPtrToStruct(outType))
 			if isPtrToStruct(outType) {
 				fmt.Fprintf(os.Stderr, "    为返回类型 %s 生成代理类\n", outType.String())
@@ -142,8 +142,8 @@ func GenerateFromConstructor(fn any, opt GenOptions) error {
 	if err := EmitFile(classFile, pkgName, classBody); err != nil {
 		return err
 	}
-
-	// 生成 load.go 文件
+	// 注册类并生成/更新 load.go
+	registerClass(pkgName, typeName)
 	if err := generateLoadFile(pkgName, opt); err != nil {
 		fmt.Fprintf(os.Stderr, "生成 load.go 失败: %v\n", err)
 	}
@@ -155,49 +155,8 @@ func GenerateFromConstructor(fn any, opt GenOptions) error {
 func generateLoadFile(pkgName string, opt GenOptions) error {
 	outDir := filepath.Join(opt.OutputRoot, pkgName)
 	loadFile := filepath.Join(outDir, "load.go")
-	
-	// 扫描目录中的文件来确定可用的类和函数
-	var classes []string
-	var functions []string
-	
-	// 检查类文件
-	entries, err := os.ReadDir(outDir)
-	if err != nil {
-		return err
-	}
-	
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if strings.HasSuffix(name, "_class.go") {
-			// 提取类名：db_class.go -> DB, txoptions_class.go -> TxOptions
-			className := strings.TrimSuffix(name, "_class.go")
-			// 处理特殊类名映射
-			switch className {
-			case "db":
-				className = "DB"
-			case "txoptions":
-				className = "TxOptions"
-			default:
-				// 处理下划线分隔的类名，如 txoptions -> TxOptions
-				parts := strings.Split(className, "_")
-				for i, part := range parts {
-					parts[i] = upperFirst(part)
-				}
-				className = strings.Join(parts, "")
-			}
-			classes = append(classes, className)
-		} else if strings.HasSuffix(name, "_func.go") {
-			// 提取函数名：open_func.go -> Open
-			funcName := strings.TrimSuffix(name, "_func.go")
-			funcName = upperFirst(funcName)
-			functions = append(functions, funcName)
-		}
-	}
-	
-	// 生成 load.go 内容
+	// 使用注册表统一生成
+	classes, functions := listRegistered(pkgName)
 	body := buildLoadFileBody(pkgName, classes, functions)
 	return EmitFile(loadFile, pkgName, body)
 }
@@ -205,13 +164,13 @@ func generateLoadFile(pkgName string, opt GenOptions) error {
 // buildLoadFileBody 构建 load.go 文件内容
 func buildLoadFileBody(pkgName string, classes, functions []string) string {
 	b := &strings.Builder{}
-	
+
 	b.WriteString("import (\n")
 	b.WriteString("\t\"github.com/php-any/origami/data\"\n")
 	b.WriteString(")\n\n")
-	
+
 	b.WriteString("func Load(vm data.VM) {\n")
-	
+
 	// 添加函数
 	if len(functions) > 0 {
 		b.WriteString("\t// 添加顶级函数\n")
@@ -223,7 +182,7 @@ func buildLoadFileBody(pkgName string, classes, functions []string) string {
 		b.WriteString("\t\tvm.AddFunc(fun)\n")
 		b.WriteString("\t}\n\n")
 	}
-	
+
 	// 添加类
 	if len(classes) > 0 {
 		b.WriteString("\t// 添加类\n")
@@ -231,7 +190,7 @@ func buildLoadFileBody(pkgName string, classes, functions []string) string {
 			fmt.Fprintf(b, "\tvm.AddClass(New%sClass())\n", className)
 		}
 	}
-	
+
 	b.WriteString("}\n")
 	return b.String()
 }
@@ -241,10 +200,10 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 	if !isPtrToStruct(structPtr) {
 		return fmt.Errorf("期望 *struct 类型，实际: %s", structPtr.String())
 	}
-	
+
 	// 生成类型标识符
 	typeKey := structPtr.String()
-	
+
 	// 检查缓存，防止重复生成
 	generatedTypesMutex.Lock()
 	if generatedTypes[typeKey] {
@@ -255,9 +214,9 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 	// 标记为已生成
 	generatedTypes[typeKey] = true
 	generatedTypesMutex.Unlock()
-	
+
 	fmt.Fprintf(os.Stderr, "开始生成类型: %s\n", typeKey)
-	
+
 	structType := structPtr.Elem()
 
 	srcPkgPath := structType.PkgPath()
@@ -293,14 +252,14 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 		if err := EmitFile(file, pkgName, body); err != nil {
 			return err
 		}
-		
+
 		// 递归处理该方法的返回值和参数，生成相关代理类
 		mt := mm.Type
 		fmt.Fprintf(os.Stderr, "检查方法 %s.%s 的返回类型和参数\n", typeName, n)
 		// 检查方法返回值
 		for oi := 0; oi < mt.NumOut(); oi++ {
 			outType := mt.Out(oi)
-			fmt.Fprintf(os.Stderr, "  返回值 %d: %s (Kind: %s, isPtrToStruct: %v)\n", 
+			fmt.Fprintf(os.Stderr, "  返回值 %d: %s (Kind: %s, isPtrToStruct: %v)\n",
 				oi, outType.String(), outType.Kind(), isPtrToStruct(outType))
 			if isPtrToStruct(outType) {
 				fmt.Fprintf(os.Stderr, "    为返回类型 %s 递归生成代理类\n", outType.String())
@@ -310,7 +269,7 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 		// 检查方法参数
 		for ii := 1; ii < mt.NumIn(); ii++ {
 			pt := mt.In(ii)
-			fmt.Fprintf(os.Stderr, "  参数 %d: %s (Kind: %s, isPtrToStruct: %v)\n", 
+			fmt.Fprintf(os.Stderr, "  参数 %d: %s (Kind: %s, isPtrToStruct: %v)\n",
 				ii, pt.String(), pt.Kind(), isPtrToStruct(pt))
 			if isPtrToStruct(pt) {
 				// 排除 context.Context 指针
@@ -328,6 +287,11 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 	classBody := buildClassFileBody(srcPkgPath, pkgName, typeName, methods, structType)
 	if err := EmitFile(classFile, pkgName, classBody); err != nil {
 		return err
+	}
+	// 注册类并尝试生成/更新 load.go
+	registerClass(pkgName, typeName)
+	if err := generateLoadFile(pkgName, opt); err != nil {
+		fmt.Fprintf(os.Stderr, "递归生成 load.go 失败: %v\n", err)
 	}
 	return nil
 }
