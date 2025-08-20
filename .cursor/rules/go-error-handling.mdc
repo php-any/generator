@@ -1,0 +1,19 @@
+---
+globs: *.go
+description: 统一错误处理规范（与 origami 调用约定一致）
+---
+
+### 错误处理规则（必须遵守）
+
+在任意 Go 代码中，一旦获得 `err`，必须立即进行如下处理并返回控制权：
+
+```go
+if err != nil {
+    return nil, data.NewErrorThrow(nil, err)
+}
+```
+
+说明：
+
+- 本项目方法惯用签名为 `Call(ctx data.Context) (data.GetValue, data.Control)`，因此出现错误时直接返回 `nil, data.NewErrorThrow(nil, err)`。
+- 不得忽略 `err` 或延后处理；不得先打印再继续。

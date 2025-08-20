@@ -1,0 +1,76 @@
+---
+description: Origami 代码生成总规则（data/node 接口、类与方法代理、函数代理）
+globs: origami/**/*.go
+---
+
+### 接口约定（摘自 demo 与现有实现）
+
+- data.Method 相关方法（生成代码需实现）：
+
+  - Call(ctx data.Context) (data.GetValue, data.Control)
+  - GetName() string（小写方法/函数名）
+  - GetModifier() data.Modifier（使用 data.ModifierPublic）
+  - GetIsStatic() bool（固定 true）
+  - GetParams() []data.GetValue（使用 node.NewParameter / node.NewParameters）
+  - GetVariables() []data.Variable（使用 node.NewVariable）
+  - GetReturnType() data.Types（固定 data.NewBaseType("void")）
+
+- data.ClassStmt 相关：
+  - GetName()/GetMethods()/GetMethod()/GetConstruct()/GetValue()/GetExtend()/GetImplements()/GetProperty()/GetProperties()
+  - GetValue 需要返回克隆值：`clone := *s; return &clone, nil`
+
+### 生成文件布局
+
+- 类文件：`origami/<pkg>/<type>_class.go`
+- 方法文件：`origami/<pkg>/<type>_<method>_method.go`
+- 函数文件：`origami/<pkg>/<func>_func.go`
+
+### import 规则
+
+- 精准导入：仅导入实际使用的包
+  - 方法/函数存在参数校验时才导入 `errors`、`github.com/php-any/origami/node`
+  - 始终导入 `github.com/php-any/origami/data`
+  - 源包以 `<pkg>src` 作为别名，例如：`sqlsrc "database/sql"`
+
+### 参数与返回值映射
+
+- 从 ctx 取参：`aN, ok := ctx.GetIndexValue(N)`；若 `!ok` 则
+
+  ```go
+  return nil, data.NewErrorThrow(nil, errors.New("缺少参数, index: N"))
+  ```
+
+- 常用类型转换（调用入参）：
+
+  - string: `aN.(*data.StringValue).AsString()`
+  - int: `aN.(*data.IntValue).AsInt()`
+  - int64: `aN.(*data.IntValue).AsInt64()`
+  - bool: `aN.(*data.BoolValue).AsBool()`
+  - data.ArrayValue: `*aN.(*data.ArrayValue)`
+  - 其它: `aN.(*data.InterfaceValue).AsInterface()`
+
+- 顶级函数多返回值统一忽略接收：
+  ```go
+  _, _ = sqlsrc.Open(...)
+  ```
+  使用等号赋值（非 :=）。
+
+### 形参/变量清单
+
+- 每个元素独立一行，行尾必须带逗号：
+  ```go
+  return []data.GetValue{
+      node.NewParameter(nil, "param0", 0, nil, nil),
+      node.NewParameter(nil, "param1", 1, nil, nil),
+  }
+  ```
+  `[]data.Variable{ ... }` 同理。
+
+### 命名与大小写
+
+- GetName 小写字符串（例如 "open"、"debug"）
+- 文件名全部小写，方法文件名为 `<type>_<method>_method.go`；函数文件名为 `<func>_func.go`
+
+### 跳过与诊断
+
+- 无法确定函数所属包、无可导出方法或签名不支持时，打印中文原因并包含函数名/类型名；不中断其他条目的生成。

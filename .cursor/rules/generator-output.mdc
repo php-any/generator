@@ -1,0 +1,104 @@
+### 生成代码风格与语法
+
+## 参数处理规则（重要）
+
+### 复杂类型参数统一处理
+
+**所有复杂类型参数必须使用通用化处理方式**：
+
+**强调**：
+
+- **禁止**针对特定类型（如 `context.Context`、`sql.DB` 等）编写专门处理逻辑
+- **禁止**硬编码包名检查（如 `if t.PkgPath() == "context"`）
+- **禁止**硬编码类型名检查（如 `if t.Name() == "Context"`）
+- **禁止**硬编码导入逻辑（如 `if needsContext { b.WriteString("\"context\"\n") }`）
+- 所有复杂类型参数必须通用化处理，避免写死代码
+- 使用反射和类型系统进行动态处理
+- 导入包名必须通过反射动态获取，不得写死任何包名
+
+### 参数类型处理规则
+
+1. **\*struct 参数**：直接断言为具体类型
+
+   ```go
+   arg0Class := a0.(*data.ClassValue).Class.(*<TypeName>Class)
+   arg0 := arg0Class.source
+   ```
+
+2. **interface{} 参数**：从 ClassValue 中提取
+
+   ```go
+   arg0 := a0.(*data.ClassValue).Class
+   ```
+
+3. **基本类型参数**：按类型转换
+   ```go
+   arg0 := a0.(*data.StringValue).AsString()
+   arg1, err := a1.(*data.IntValue).AsInt()
+   if err != nil { return nil, data.NewErrorThrow(nil, err) }
+   ```
+
+### 硬编码检查示例（禁止）
+
+以下代码模式**严格禁止**：
+
+```go
+// ❌ 禁止：硬编码包名检查
+if t.PkgPath() == "context" && t.Name() == "Context" {
+    return "context"
+}
+
+// ❌ 禁止：硬编码导入逻辑
+if needsContext {
+    b.WriteString("\t\"context\"\n")
+}
+
+// ❌ 禁止：硬编码类型处理
+case "context":
+    fmt.Fprintf(b, "a%d.(*data.AnyValue).Value.(context.Context)", i)
+```
+
+**正确做法**：使用反射和类型系统进行通用化处理，让 Go 工具链自动处理导入。
+
+- 切片字面量（例如 `[]data.GetValue{}`、`[]data.Variable{}`）中的每个元素，使用“逐行 + 行尾逗号”格式。
+- 多返回值忽略接收，必须使用等号赋值（非 `:=`）。
+- import 仅按需；仅在存在参数校验时引入 `errors`/`node`。
+- 顶级函数代理的 `GetName()` 返回小写函数名；`GetIsStatic()` 返回 `true`；`GetReturnType()` 固定为 `void`。
+
+### 顶级函数代理返回值与错误处理（参考 open_func.go）
+
+- 函数调用使用具名接收变量，遇到 `error` 作为返回值时，必须立刻：
+  ```go
+  if err != nil {
+      return nil, data.NewErrorThrow(nil, err)
+  }
+  ```
+- 成功路径将结果值封装为 `data.GetValue` 返回，例如：
+  ```go
+  return data.NewAnyValue(db), nil
+  ```
+- 参数校验缺失时，返回：`return nil, data.NewErrorThrow(nil, errors.New("缺少参数, index: N"))`
+
+### 禁止写死（全局）
+
+- 任何与特定包/函数/类型名称绑定的写死逻辑一律禁止，例如：
+  - “如果是 database/sql.Open 则参数名为 XXX”的硬编码
+  - “某函数固定返回 YYY”的硬编码
+- 所有生成逻辑必须采用“启发式 + 类型/语义分析”方式；扩展行为通过可维护的通用规则实现，不允许内嵌针对某个符号的特判。
+
+### 参数命名（启发式）
+
+- 参数名依据“类型 + 上下文”推导，不得写死：
+  - 指针解引用后的命名类型，如 `Context`→`ctx`、`Duration`→`d`、`*XxxOptions`→`opts`
+  - 形参为切片/变长时优先命名为 `args`
+  - 函数/方法名中含 `query/prepare/exec` 时的 string 参数优先命名为 `query`
+  - `set`/`setmax` 系的整型参数优先命名为 `n`
+  - 其它未匹配项统一命名 `paramN`
+
+### 错误提示与跳过策略
+
+- 若无法确定函数所属包或签名不支持，保持生成器输出明确的中文原因与函数名/类型名，不中断其他条目的生成。
+
+### 错误提示与跳过策略
+
+- 若无法确定函数所属包或签名不支持，保持生成器输出明确的中文原因与函数名/类型名，不中断其他条目的生成。
