@@ -34,17 +34,30 @@ go get github.com/php-any/generator
 package main
 
 import (
-    "database/sql"
-    _ "github.com/mattn/go-sqlite3"
-    "github.com/php-any/generator"
+  "database/sql"
+  "fmt"
+  "os"
+
+  _ "github.com/go-sql-driver/mysql"
+  "github.com/php-any/generator"
 )
 
+// 入口：根据 array 中配置的构造函数，生成 origami 目录下的类与方法包装代码
 func main() {
-    // 输出到 origami/sql/... 下
-    if err := generator.GenerateFromConstructor(sql.Open, generator.GenOptions{OutputRoot: "origami"}); err != nil {
-        panic(err)
+  array := []any{
+    sql.Open,
+  }
+
+  outRoot := "origami"
+  for _, elem := range array {
+    if err := generator.GenerateFromConstructor(elem, generator.GenOptions{OutputRoot: outRoot}); err != nil {
+      fmt.Fprintln(os.Stderr, "生成失败:", err)
+      continue
     }
+    fmt.Println("生成完成 ->", outRoot)
+  }
 }
+
 ```
 
 运行后将生成：
