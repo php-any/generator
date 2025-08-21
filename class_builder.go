@@ -72,6 +72,7 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 	fmt.Fprintf(b, "func (s *%[1]sClass) GetName() string { return \"%[2]s\\\\%[1]s\" }\n", typeName, namePrefix)
 	fmt.Fprintf(b, "func (s *%[1]sClass) GetExtend() *string { return nil }\n", typeName)
 	fmt.Fprintf(b, "func (s *%[1]sClass) GetImplements() []string { return nil }\n", typeName)
+	fmt.Fprintf(b, "func (s *%[1]sClass) AsString() string { return \"%[2]s{}\" }\n", typeName, typeName)
 
 	// GetProperty 实现
 	if len(fields) > 0 {
