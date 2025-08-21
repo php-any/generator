@@ -8,7 +8,7 @@ import (
 )
 
 // 生成类包装代码（仅依赖已生成的方法）
-func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string]reflect.Method, structType reflect.Type) string {
+func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string]reflect.Method, structType reflect.Type, namePrefix string) string {
 	b := &strings.Builder{}
 	importAlias := pkgName + "src"
 	b.WriteString("import (\n")
@@ -69,10 +69,10 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 
 	// interface impls
 	fmt.Fprintf(b, "func (s *%[1]sClass) GetValue(_ data.Context) (data.GetValue, data.Control) { clone := *s; return &clone, nil }\n", typeName)
-	fmt.Fprintf(b, "func (s *%[1]sClass) GetName() string { return \"%[2]s\\\\%[1]s\" }\n", typeName, pkgName)
+	fmt.Fprintf(b, "func (s *%[1]sClass) GetName() string { return \"%[2]s\\\\%[1]s\" }\n", typeName, namePrefix)
 	fmt.Fprintf(b, "func (s *%[1]sClass) GetExtend() *string { return nil }\n", typeName)
 	fmt.Fprintf(b, "func (s *%[1]sClass) GetImplements() []string { return nil }\n", typeName)
-	
+
 	// GetProperty 实现
 	if len(fields) > 0 {
 		fmt.Fprintf(b, "func (s *%[1]sClass) GetProperty(name string) (data.Property, bool) {\n\tswitch name {\n", typeName)
@@ -80,7 +80,7 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 			fmt.Fprintf(b, "\tcase \"%[1]s\": return s.prop%[1]s, true\n", field.Name)
 		}
 		b.WriteString("\t}\n\treturn nil, false\n}\n\n")
-		
+
 		// GetProperties 实现
 		fmt.Fprintf(b, "func (s *%[1]sClass) GetProperties() map[string]data.Property {\n\treturn map[string]data.Property{\n", typeName)
 		for _, field := range fields {

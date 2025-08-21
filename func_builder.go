@@ -120,6 +120,16 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 			collectPkgPaths(paramTypes[i], usedPkgs)
 		}
 	}
+	// 补充：time.Duration 属于命名的 int64，需要显式导入 time
+	for i := 0; i < numIn; i++ {
+		base := paramTypes[i]
+		if base.Kind() == reflect.Ptr {
+			base = base.Elem()
+		}
+		if base.PkgPath() == "time" && base.Name() == "Duration" {
+			usedPkgs["time"] = true
+		}
+	}
 	// 移除源包（已单独导入）
 	delete(usedPkgs, srcPkgPath)
 
@@ -180,7 +190,12 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 		case reflect.Int:
 			fmt.Fprintf(b, "\targ%d, err := a%d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n", i, i)
 		case reflect.Int64:
-			fmt.Fprintf(b, "\targ%[1]dInt, err := a%[1]d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n\targ%[1]d := int64(arg%[1]dInt)\n", i)
+			// time.Duration 特判
+			if base.PkgPath() == "time" && base.Name() == "Duration" {
+				fmt.Fprintf(b, "\targ%[1]dInt, err := a%[1]d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n\targ%[1]d := time.Duration(arg%[1]dInt)\n", i)
+			} else {
+				fmt.Fprintf(b, "\targ%[1]dInt, err := a%[1]d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n\targ%[1]d := int64(arg%[1]dInt)\n", i)
+			}
 		case reflect.Bool:
 			fmt.Fprintf(b, "\targ%d, err := a%d.(*data.BoolValue).AsBool()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n", i, i)
 		case reflect.Slice:

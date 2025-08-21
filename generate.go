@@ -15,11 +15,20 @@ import (
 type GenOptions struct {
 	// 输出根目录，例如: origami
 	OutputRoot string
+	// 自定义 GetName 拼接前缀；为空则使用源包名
+	NamePrefix string
 }
 
 // 全局缓存，防止递归死循环
 var generatedTypes = make(map[string]bool)
 var generatedTypesMutex sync.Mutex
+
+func effectiveNamePrefix(defaultPkgName string, opt GenOptions) string {
+	if opt.NamePrefix != "" {
+		return opt.NamePrefix
+	}
+	return defaultPkgName
+}
 
 // GenerateFromConstructor：先为函数本身生成函数代理；若返回 *struct，再生成类与方法代理
 func GenerateFromConstructor(fn any, opt GenOptions) error {
@@ -138,7 +147,7 @@ func GenerateFromConstructor(fn any, opt GenOptions) error {
 
 	// 生成 class 文件（即便无方法也生成空类，便于参数/返回代理）
 	classFile := filepath.Join(outDir, strings.ToLower(typeName)+"_class.go")
-	classBody := buildClassFileBody(srcPkgPath, pkgName, typeName, supported, structType)
+	classBody := buildClassFileBody(srcPkgPath, pkgName, typeName, supported, structType, effectiveNamePrefix(pkgName, opt))
 	if err := EmitFile(classFile, pkgName, classBody); err != nil {
 		return err
 	}
@@ -284,7 +293,7 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 	}
 	// 类文件（即便无方法也生成空类）
 	classFile := filepath.Join(outDir, strings.ToLower(typeName)+"_class.go")
-	classBody := buildClassFileBody(srcPkgPath, pkgName, typeName, methods, structType)
+	classBody := buildClassFileBody(srcPkgPath, pkgName, typeName, methods, structType, effectiveNamePrefix(pkgName, opt))
 	if err := EmitFile(classFile, pkgName, classBody); err != nil {
 		return err
 	}

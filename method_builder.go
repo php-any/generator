@@ -40,7 +40,7 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method)
 	}
 
 	importAlias := pkgName + "src"
-	
+
 	// 检测需要的包导入：仅为会在代码里做类型断言的参数类型收集依赖包
 	usedPkgs := make(map[string]bool)
 	for _, t := range paramTypes {
@@ -74,7 +74,7 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method)
 			}
 		}
 	}
-	
+
 	b := &strings.Builder{}
 	b.WriteString("import (\n")
 	// 可选导入：errors 仅在存在参数校验时才使用
@@ -90,6 +90,17 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method)
 		modPath := getModulePath()
 		if modPath != "" {
 			fmt.Fprintf(b, "\t\"%s/origami/%s\"\n", modPath, retPkgBase)
+		}
+	}
+	// time.Duration 入参需要导入 time 包
+	for _, t := range paramTypes {
+		base := t
+		if base.Kind() == reflect.Ptr {
+			base = base.Elem()
+		}
+		if base.PkgPath() == "time" && base.Name() == "Duration" {
+			fmt.Fprintf(b, "\t\"time\"\n")
+			break
 		}
 	}
 	fmt.Fprintf(b, "\t%s %q\n", importAlias, srcPkgPath)
@@ -135,7 +146,12 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method)
 		case reflect.Int:
 			fmt.Fprintf(b, "\targ%d, err := a%d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n", i, i)
 		case reflect.Int64:
-			fmt.Fprintf(b, "\targ%[1]dInt, err := a%[1]d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n\targ%[1]d := int64(arg%[1]dInt)\n", i)
+			// time.Duration 特判
+			if base.PkgPath() == "time" && base.Name() == "Duration" {
+				fmt.Fprintf(b, "\targ%[1]dInt, err := a%[1]d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n\targ%[1]d := time.Duration(arg%[1]dInt)\n", i)
+			} else {
+				fmt.Fprintf(b, "\targ%[1]dInt, err := a%[1]d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n\targ%[1]d := int64(arg%[1]dInt)\n", i)
+			}
 		case reflect.Bool:
 			fmt.Fprintf(b, "\targ%d, err := a%d.(*data.BoolValue).AsBool()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n", i, i)
 		case reflect.Slice:
