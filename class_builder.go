@@ -46,8 +46,12 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 	}
 	b.WriteString("\t}\n}\n\n")
 
-	// New<Class>ClassFrom(source *alias.Type) - 接收返回的 *struct 值
-	fmt.Fprintf(b, "func New%[1]sClassFrom(source *%s.%[1]s) data.ClassStmt {\n", typeName, importAlias)
+	// New<Class>ClassFrom(source alias.Type or *alias.Type)
+	star := ""
+	if structType != nil {
+		star = "*"
+	}
+	fmt.Fprintf(b, "func New%[1]sClassFrom(source %s%s.%[1]s) data.ClassStmt {\n", typeName, star, importAlias)
 	fmt.Fprintf(b, "\treturn &%[1]sClass{\n\t\tsource: source,\n", typeName)
 	for _, n := range names {
 		fmt.Fprintf(b, "\t\t%s: &%s%sMethod{source: source},\n", lowerFirst(n), typeName, n)
@@ -58,7 +62,7 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 	b.WriteString("\t}\n}\n\n")
 
 	// struct（保存类级别 source，并保留方法代理字段）
-	fmt.Fprintf(b, "type %sClass struct {\n\tnode.Node\n\tsource *%s.%s\n", typeName, importAlias, typeName)
+	fmt.Fprintf(b, "type %sClass struct {\n\tnode.Node\n\tsource %s%s.%s\n", typeName, star, importAlias, typeName)
 	for _, n := range names {
 		fmt.Fprintf(b, "\t%[1]s data.Method\n", lowerFirst(n))
 	}

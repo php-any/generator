@@ -3,6 +3,7 @@ package generator
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -66,7 +67,7 @@ func generateTopFunction(fn any, opt GenOptions) error {
 
 	outDir := filepath.Join(opt.OutputRoot, pkgName)
 	file := filepath.Join(outDir, strings.ToLower(simpleName)+"_func.go")
-	body := buildTopFunctionFileBodyWithNamesAndPC(pkgPath, pkgName, simpleName, fullName, typ, val.Pointer())
+	body := buildTopFunctionFileBodyWithNamesAndPC(pkgPath, pkgName, simpleName, fullName, typ, val.Pointer(), opt)
 	if err := EmitFile(file, pkgName, body); err != nil {
 		return err
 	}
@@ -76,7 +77,7 @@ func generateTopFunction(fn any, opt GenOptions) error {
 	return nil
 }
 
-func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullName string, fnType reflect.Type, pc uintptr) string {
+func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullName string, fnType reflect.Type, pc uintptr, opt GenOptions) string {
 
 	numIn := fnType.NumIn()
 	numOut := fnType.NumOut()
@@ -109,6 +110,21 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 
 	// 动态收集需要额外导入的包（仅当会用于类型断言时）
 	usedPkgs := make(map[string]bool)
+	// 收集返回值类型需要的 origami 包
+	retPkgBase := ""
+	retPkgPath := ""
+	if numOut > 0 {
+		retT := fnType.Out(0)
+		if hasErr && numOut > 1 {
+			retT = fnType.Out(0)
+		}
+		if (retT.Kind() == reflect.Ptr && retT.Elem().Kind() == reflect.Struct) ||
+			(retT.Kind() == reflect.Interface && retT.PkgPath() != "" && retT.Name() != "") {
+			retPkgBase = pkgBaseName(retT.PkgPath())
+			retPkgPath = retT.PkgPath()
+		}
+	}
+
 	for i := 0; i < numIn; i++ {
 		switch paramKinds[i] {
 		case "named_interface":
@@ -142,6 +158,11 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 	for pkg := range usedPkgs {
 		fmt.Fprintf(b, "\t\"%s\"\n", pkg)
 	}
+	// 导入因返回值跨包需要的 origami/<pkg>
+	if retPkgPath != "" && retPkgPath != srcPkgPath {
+		// 对于 origami 目录下的代码，直接使用 origami 模块路径
+		fmt.Fprintf(b, "\t\"github.com/php-any/origami/%s\"\n", retPkgBase)
+	}
 	// 源包与必需包
 	fmt.Fprintf(b, "\t\"%s\"\n", srcPkgPath)
 	b.WriteString("\t\"github.com/php-any/origami/data\"\n")
@@ -167,6 +188,23 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 		if base.Kind() == reflect.Ptr {
 			base = base.Elem()
 		}
+
+		// 检查是否为可变参数（函数的最后一个参数且为 slice 类型）
+		if i == numIn-1 && base.Kind() == reflect.Slice {
+			// 这可能是可变参数，生成的代码可能需要手动修改
+			fmt.Fprintf(os.Stderr, "⚠️  检测到可能的可变参数：%s 函数的第 %d 个参数 %s\n", funcName, i, paramNames[i])
+			fmt.Fprintf(os.Stderr, "   生成的代码可能需要手动修改，请检查：\n")
+			fmt.Fprintf(os.Stderr, "   1. 参数处理部分：可能需要调整 slice 展开逻辑\n")
+			fmt.Fprintf(os.Stderr, "   2. GetParams 部分：可能需要使用 NewParametersReference 替代 NewParameter\n")
+			fmt.Fprintf(os.Stderr, "   3. 函数调用部分：确保使用 ... 操作符展开 slice\n")
+			fmt.Fprintf(os.Stderr, "   生成的文件：origami/%s/%s_func.go\n\n", pkgName, strings.ToLower(funcName))
+			fmt.Fprintf(b, "\t// 警告：这可能是可变参数（variadic parameter）\n")
+			fmt.Fprintf(b, "\t// 如果生成的代码有问题，请检查以下文件：\n")
+			fmt.Fprintf(b, "\t// 1. 参数处理部分：可能需要调整 slice 展开逻辑\n")
+			fmt.Fprintf(b, "\t// 2. GetParams 部分：可能需要使用 NewParametersReference 替代 NewParameter\n")
+			fmt.Fprintf(b, "\t// 3. 函数调用部分：确保使用 ... 操作符展开 slice\n")
+		}
+
 		// *struct 参数：从代理类取出具体 source
 		if paramTypes[i].Kind() == reflect.Ptr && paramTypes[i].Elem().Kind() == reflect.Struct {
 			clsName := paramTypes[i].Elem().Name()
@@ -199,6 +237,8 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 		case reflect.Bool:
 			fmt.Fprintf(b, "\targ%d, err := a%d.(*data.BoolValue).AsBool()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n", i, i)
 		case reflect.Slice:
+			// 注意：对于可变参数（variadic parameters），可能需要使用 NewParametersReference 来引用参数
+			// 当前生成的是 NewParameter，如果遇到问题，请考虑修改为 NewParametersReference
 			fmt.Fprintf(b, "\targ%d := *a%d.(*data.ArrayValue)\n", i, i)
 		default:
 			fmt.Fprintf(b, "\targ%d := a%d.(*data.InterfaceValue).AsInterface()\n", i, i)
@@ -232,7 +272,16 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		fmt.Fprintf(b, "arg%d", i)
+		// 变参最后一个参数需要使用 ... 展开
+		base := paramTypes[i]
+		if base.Kind() == reflect.Ptr {
+			base = base.Elem()
+		}
+		if i == numIn-1 && base.Kind() == reflect.Slice {
+			fmt.Fprintf(b, "arg%d...", i)
+		} else {
+			fmt.Fprintf(b, "arg%d", i)
+		}
 	}
 	b.WriteString(")\n")
 	// 错误处理
@@ -243,7 +292,35 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 	if nonErrCount == 0 {
 		b.WriteString("\treturn nil, nil\n}\n\n")
 	} else if nonErrCount == 1 {
-		b.WriteString("\treturn data.NewAnyValue(ret0), nil\n}\n\n")
+		// 检查返回值类型是否需要生成代理类
+		retT := fnType.Out(0)
+		if hasErr {
+			retT = fnType.Out(0)
+		}
+		if retT.Kind() == reflect.Ptr && retT.Elem().Kind() == reflect.Struct {
+			// 返回 *struct 类型，需要生成代理类
+			retName := retT.Elem().Name()
+			if retPkgPath != "" && retPkgPath != srcPkgPath {
+				// 跨包返回类型，需要导入 origami/<pkg>
+				fmt.Fprintf(b, "\treturn data.NewClassValue(%s.New%sClassFrom(ret0), ctx), nil\n}\n\n", retPkgBase, retName)
+			} else {
+				// 同包返回类型
+				fmt.Fprintf(b, "\treturn data.NewClassValue(New%sClassFrom(ret0), ctx), nil\n}\n\n", retName)
+			}
+		} else if retT.Kind() == reflect.Interface && retT.PkgPath() != "" && retT.Name() != "" {
+			// 返回具名接口类型，需要生成代理类
+			retName := retT.Name()
+			if retPkgPath != "" && retPkgPath != srcPkgPath {
+				// 跨包返回类型，需要导入 origami/<pkg>
+				fmt.Fprintf(b, "\treturn data.NewClassValue(%s.New%sClassFrom(ret0), ctx), nil\n}\n\n", retPkgBase, retName)
+			} else {
+				// 同包返回类型
+				fmt.Fprintf(b, "\treturn data.NewClassValue(New%sClassFrom(ret0), ctx), nil\n}\n\n", retName)
+			}
+		} else {
+			// 其他类型，使用 AnyValue
+			b.WriteString("\treturn data.NewAnyValue(ret0), nil\n}\n\n")
+		}
 	} else {
 		b.WriteString("\treturn data.NewAnyValue([]any{")
 		for j := 0; j < nonErrCount; j++ {
@@ -255,15 +332,25 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 		b.WriteString("}), nil\n}\n\n")
 	}
 
-	fmt.Fprintf(b, "func (h *%sFunction) GetName() string { return \"%s\\\\%s\" }\n", typeName, pkgName, lowerFirst(funcName))
+	namePrefix := effectiveNamePrefix(pkgName, opt)
+	fmt.Fprintf(b, "func (h *%sFunction) GetName() string { return \"%s\\\\%s\" }\n", typeName, namePrefix, lowerFirst(funcName))
 	fmt.Fprintf(b, "func (h *%sFunction) GetModifier() data.Modifier { return data.ModifierPublic }\n", typeName)
 	fmt.Fprintf(b, "func (h *%sFunction) GetIsStatic() bool { return true }\n", typeName)
 	// GetParams
+	// 注意：对于可变参数（variadic parameters），需要使用 NewParameters 来引用参数
 	b.WriteString("func (h *")
 	b.WriteString(typeName)
 	b.WriteString("Function) GetParams() []data.GetValue { return []data.GetValue{\n")
 	for i := 0; i < numIn; i++ {
-		fmt.Fprintf(b, "\t\tnode.NewParameter(nil, %q, %d, nil, nil),\n", paramNames[i], i)
+		base := paramTypes[i]
+		if base.Kind() == reflect.Ptr {
+			base = base.Elem()
+		}
+		if i == numIn-1 && base.Kind() == reflect.Slice {
+			fmt.Fprintf(b, "\t\tnode.NewParameters(nil, %q, %d, nil, nil),\n", paramNames[i], i)
+		} else {
+			fmt.Fprintf(b, "\t\tnode.NewParameter(nil, %q, %d, nil, nil),\n", paramNames[i], i)
+		}
 	}
 	b.WriteString("\t}\n}\n")
 	// GetVariables

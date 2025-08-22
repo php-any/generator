@@ -2,31 +2,46 @@ package generator
 
 import (
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 )
 
 // 生成实例方法包装代码
-func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method) (string, bool) {
+// sourceIsPtr 决定 source 字段是否为指针类型（结构体为 *，接口为非 *）
+func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method, sourceIsPtr bool) (string, bool) {
 	// 支持更多参数类型组合
 	mt := m.Type
-	// 去掉接收者参数
-	numIn := mt.NumIn() - 1
-	if numIn < 0 {
-		return "", false
+	// 参数个数计算
+	numIn := mt.NumIn()
+	if sourceIsPtr {
+		// 结构体方法，需要去掉接收者参数
+		numIn = numIn - 1
+		if numIn < 0 {
+			return "", false
+		}
 	}
+	// 接口方法，不需要减去接收者，直接使用 mt.NumIn()
 
 	// 参数类型收集
 	paramTypes := make([]reflect.Type, 0, numIn)
 	paramNames := make([]string, 0, numIn)
 	for i := 0; i < numIn; i++ {
-		t := mt.In(i + 1)
+		// 接口方法参数从 In(0) 开始，结构体方法从 In(1) 开始（跳过接收者）
+		var t reflect.Type
+		if sourceIsPtr {
+			t = mt.In(i + 1) // 结构体方法，跳过接收者
+		} else {
+			t = mt.In(i) // 接口方法，不跳过接收者
+		}
 		paramTypes = append(paramTypes, t)
 		paramNames = append(paramNames, "param"+strconvItoa(i))
 	}
 	// 优先通过源码提取真实参数名
-	if names, ok := tryExtractParamNames(m.Func.Pointer(), numIn); ok {
-		paramNames = names
+	if m.Func.IsValid() {
+		if names, ok := tryExtractParamNames(m.Func.Pointer(), numIn); ok {
+			paramNames = names
+		}
 	}
 
 	// 返回值分析
@@ -111,7 +126,11 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method)
 	b.WriteString(")\n\n")
 
 	// type
-	fmt.Fprintf(b, "type %s%sMethod struct {\n\tsource *%s.%s\n}\n\n", typeName, m.Name, importAlias, typeName)
+	star := ""
+	if sourceIsPtr {
+		star = "*"
+	}
+	fmt.Fprintf(b, "type %s%sMethod struct {\n\tsource %s%s.%s\n}\n\n", typeName, m.Name, star, importAlias, typeName)
 
 	// Call
 	fmt.Fprintf(b, "func (h *%s%sMethod) Call(ctx data.Context) (data.GetValue, data.Control) {\n\n", typeName, m.Name)
@@ -123,6 +142,22 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method)
 		base := t
 		if base.Kind() == reflect.Ptr {
 			base = base.Elem()
+		}
+
+		// 检查是否为可变参数
+		if m.Type.IsVariadic() && i == len(paramTypes)-1 {
+			// 这是可变参数，生成的代码可能需要手动修改
+			fmt.Fprintf(os.Stderr, "⚠️  检测到可变参数：%s.%s 方法的第 %d 个参数 %s\n", typeName, m.Name, i, paramNames[i])
+			fmt.Fprintf(os.Stderr, "   生成的代码可能需要手动修改，请检查：\n")
+			fmt.Fprintf(os.Stderr, "   1. 参数处理部分：可能需要调整 slice 展开逻辑\n")
+			fmt.Fprintf(os.Stderr, "   2. GetParams 部分：可能需要使用 NewParametersReference 替代 NewParameter\n")
+			fmt.Fprintf(os.Stderr, "   3. 方法调用部分：确保使用 ... 操作符展开 slice\n")
+			fmt.Fprintf(os.Stderr, "   生成的文件：origami/%s/%s_%s_method.go\n\n", pkgName, strings.ToLower(typeName), strings.ToLower(m.Name))
+			fmt.Fprintf(b, "\t// 警告：这是可变参数（variadic parameter）\n")
+			fmt.Fprintf(b, "\t// 如果生成的代码有问题，请检查以下文件：\n")
+			fmt.Fprintf(b, "\t// 1. 参数处理部分：可能需要调整 slice 展开逻辑\n")
+			fmt.Fprintf(b, "\t// 2. GetParams 部分：可能需要使用 NewParametersReference 替代 NewParameter\n")
+			fmt.Fprintf(b, "\t// 3. 方法调用部分：确保使用 ... 操作符展开 slice\n")
 		}
 
 		// *struct 参数：从代理类取出具体 source
@@ -155,7 +190,12 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method)
 		case reflect.Bool:
 			fmt.Fprintf(b, "\targ%d, err := a%d.(*data.BoolValue).AsBool()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n", i, i)
 		case reflect.Slice:
-			fmt.Fprintf(b, "\targ%d := *a%d.(*data.ArrayValue)\n", i, i)
+			// 注意：对于可变参数（variadic parameters），可能需要使用 NewParametersReference 来引用参数
+			// 当前生成的是 NewParameter，如果遇到问题，请考虑修改为 NewParametersReference
+			fmt.Fprintf(b, "\targ%d := make([]any, 0)\n", i)
+			fmt.Fprintf(b, "\tfor _, v := range a%d.(*data.ArrayValue).Value {\n", i)
+			fmt.Fprintf(b, "\t\targ%d = append(arg%d, v)\n", i, i)
+			fmt.Fprintf(b, "\t}\n")
 		default:
 			typeStr := t.String()
 			typeStr = strings.ReplaceAll(typeStr, pkgBaseName(srcPkgPath)+".", importAlias+".")
@@ -175,7 +215,12 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method)
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			fmt.Fprintf(b, "arg%d", i)
+			// 变参最后一个参数需要使用 ... 展开
+			if m.Type.IsVariadic() && i == len(paramTypes)-1 {
+				fmt.Fprintf(b, "arg%d...", i)
+			} else {
+				fmt.Fprintf(b, "arg%d", i)
+			}
 		}
 		b.WriteString("); err != nil {\n\t\treturn nil, data.NewErrorThrow(nil, err)\n\t}\n")
 	} else {
@@ -208,7 +253,12 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method)
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			fmt.Fprintf(b, "arg%d", i)
+			// 变参最后一个参数需要使用 ... 展开
+			if m.Type.IsVariadic() && i == len(paramTypes)-1 {
+				fmt.Fprintf(b, "arg%d...", i)
+			} else {
+				fmt.Fprintf(b, "arg%d", i)
+			}
 		}
 		b.WriteString(")\n")
 
@@ -231,7 +281,18 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method)
 			retName := retT.Elem().Name()
 			fmt.Fprintf(b, "\treturn data.NewClassValue(%sNew%sClassFrom(ret0), ctx), nil\n}\n\n", retCtorPrefix, retName)
 		} else {
-			b.WriteString("\treturn data.NewAnyValue(ret0), nil\n}\n\n")
+			switch retT.Kind() {
+			case reflect.Bool:
+				b.WriteString("\treturn data.NewBoolValue(ret0), nil\n}\n\n")
+			case reflect.Int:
+				b.WriteString("\treturn data.NewIntValue(ret0), nil\n}\n\n")
+			case reflect.Int64:
+				b.WriteString("\treturn data.NewIntValue(int(ret0)), nil\n}\n\n")
+			case reflect.String:
+				b.WriteString("\treturn data.NewStringValue(ret0), nil\n}\n\n")
+			default:
+				b.WriteString("\treturn data.NewAnyValue(ret0), nil\n}\n\n")
+			}
 		}
 	} else {
 		b.WriteString("\treturn data.NewAnyValue([]any{")
@@ -250,12 +311,20 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method)
 	fmt.Fprintf(b, "func (h *%s%sMethod) GetIsStatic() bool { return true }\n", typeName, m.Name)
 
 	// GetParams
+	// 注意：对于可变参数（variadic parameters），需要使用 NewParameters 来引用参数
 	b.WriteString("func (h *")
 	b.WriteString(typeName)
 	b.WriteString(m.Name)
 	b.WriteString("Method) GetParams() []data.GetValue { return []data.GetValue{\n")
 	for i := 0; i < numIn; i++ {
-		fmt.Fprintf(b, "\t\tnode.NewParameter(nil, %q, %d, nil, nil),\n", paramNames[i], i)
+		// 检查是否为可变参数
+		if m.Type.IsVariadic() && i == len(paramTypes)-1 {
+			// 这是可变参数，使用 NewParameters
+			fmt.Fprintf(b, "\t\tnode.NewParameters(nil, %q, %d, nil, nil),\n", paramNames[i], i)
+		} else {
+			// 普通参数，使用 NewParameter
+			fmt.Fprintf(b, "\t\tnode.NewParameter(nil, %q, %d, nil, nil),\n", paramNames[i], i)
+		}
 	}
 	b.WriteString("\t}\n}\n\n")
 
