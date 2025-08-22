@@ -334,6 +334,16 @@ func generateInterfaceProxy(iface reflect.Type, opt GenOptions) error {
 
 	for _, n := range names {
 		m := allMethods[n]
+
+		// 检查方法的返回值，看是否需要生成代理类
+		mt := m.Type
+		for oi := 0; oi < mt.NumOut(); oi++ {
+			outType := mt.Out(oi)
+			if isTypeNeedsProxy(outType) {
+				_ = generateProxyFromType(outType, opt)
+			}
+		}
+
 		file := filepath.Join(outDir, strings.ToLower(typeName)+"_"+strings.ToLower(n)+"_method.go")
 		body, ok := buildMethodFileBody(srcPkgPath, pkgName, typeName, m, false)
 		if !ok {
@@ -368,7 +378,7 @@ func isPtrToStruct(t reflect.Type) bool {
 // isTypeNeedsProxy 检查类型是否需要生成代理类
 func isTypeNeedsProxy(t reflect.Type) bool {
 	// 检查 *struct 类型
-	if t.Kind() == reflect.Pointer && t.Elem() != nil && t.Elem().Kind() == reflect.Struct {
+	if t.Kind() == reflect.Ptr && t.Elem() != nil && t.Elem().Kind() == reflect.Struct {
 		return true
 	}
 	// 检查具名接口类型（如 sql.Result）

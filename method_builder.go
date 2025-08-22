@@ -73,7 +73,7 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 	// 源包通过 importAlias 导入，移除重复
 	delete(usedPkgs, srcPkgPath)
 
-	// 检测单一非错误返回值是否为跨包 *struct，以便导入 origami/<pkg> 并在调用处加前缀
+	// 检测单一非错误返回值是否为跨包 *struct 或接口，以便导入 origami/<pkg> 并在调用处加前缀
 	retPkgBase := ""
 	retCtorPrefix := ""
 	if nonErrCount == 1 {
@@ -82,7 +82,15 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 			retT = mt.Out(0)
 		}
 		if retT.Kind() == reflect.Ptr && retT.Elem().Kind() == reflect.Struct {
+			// 返回 *struct 类型
 			pkgBase := pkgBaseName(retT.Elem().PkgPath())
+			if pkgBase != "" && pkgBase != pkgName {
+				retPkgBase = pkgBase
+				retCtorPrefix = pkgBase + "."
+			}
+		} else if retT.Kind() == reflect.Interface && retT.PkgPath() != "" && retT.Name() != "" {
+			// 返回具名接口类型
+			pkgBase := pkgBaseName(retT.PkgPath())
 			if pkgBase != "" && pkgBase != pkgName {
 				retPkgBase = pkgBase
 				retCtorPrefix = pkgBase + "."
@@ -147,17 +155,8 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 		// 检查是否为可变参数
 		if m.Type.IsVariadic() && i == len(paramTypes)-1 {
 			// 这是可变参数，生成的代码可能需要手动修改
-			fmt.Fprintf(os.Stderr, "⚠️  检测到可变参数：%s.%s 方法的第 %d 个参数 %s\n", typeName, m.Name, i, paramNames[i])
-			fmt.Fprintf(os.Stderr, "   生成的代码可能需要手动修改，请检查：\n")
-			fmt.Fprintf(os.Stderr, "   1. 参数处理部分：可能需要调整 slice 展开逻辑\n")
-			fmt.Fprintf(os.Stderr, "   2. GetParams 部分：可能需要使用 NewParametersReference 替代 NewParameter\n")
-			fmt.Fprintf(os.Stderr, "   3. 方法调用部分：确保使用 ... 操作符展开 slice\n")
+			fmt.Fprintf(os.Stderr, "⚠️  检测到可变参数：%s.%s 方法的第 %d 个参数, 如果需要修改参数值, 可能需要使用 NewParametersReference 替代 NewParameter 改为引用传参 %s\n", typeName, m.Name, i, paramNames[i])
 			fmt.Fprintf(os.Stderr, "   生成的文件：origami/%s/%s_%s_method.go\n\n", pkgName, strings.ToLower(typeName), strings.ToLower(m.Name))
-			fmt.Fprintf(b, "\t// 警告：这是可变参数（variadic parameter）\n")
-			fmt.Fprintf(b, "\t// 如果生成的代码有问题，请检查以下文件：\n")
-			fmt.Fprintf(b, "\t// 1. 参数处理部分：可能需要调整 slice 展开逻辑\n")
-			fmt.Fprintf(b, "\t// 2. GetParams 部分：可能需要使用 NewParametersReference 替代 NewParameter\n")
-			fmt.Fprintf(b, "\t// 3. 方法调用部分：确保使用 ... 操作符展开 slice\n")
 		}
 
 		// *struct 参数：从代理类取出具体 source
@@ -190,11 +189,32 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 		case reflect.Bool:
 			fmt.Fprintf(b, "\targ%d, err := a%d.(*data.BoolValue).AsBool()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n", i, i)
 		case reflect.Slice:
-			// 注意：对于可变参数（variadic parameters），可能需要使用 NewParametersReference 来引用参数
-			// 当前生成的是 NewParameter，如果遇到问题，请考虑修改为 NewParametersReference
-			fmt.Fprintf(b, "\targ%d := make([]any, 0)\n", i)
+			// 将切片按元素真实类型展开，而不是一律使用 []any
+			// 计算元素类型字符串，并将源包短名替换为导入别名（如 driversrc.Value）
+			elem := base.Elem()
+			elemTypeStr := elem.String()
+			// 默认按源包替换为 importAlias 前缀
+			elemTypeStr = strings.ReplaceAll(elemTypeStr, pkgBaseName(srcPkgPath)+".", importAlias+".")
+			// 特判：database/sql/driver 中的 Value 由于是别名，反射可能显示为 interface{}
+			if elem.Kind() == reflect.Interface && elem.PkgPath() == "" {
+				if srcPkgPath == "database/sql/driver" {
+					// 显式使用 driversrc.Value
+					elemTypeStr = importAlias + ".Value"
+				} else {
+					// 其它包的空接口一律使用 any
+					elemTypeStr = "any"
+				}
+			}
+			sliceTypeStr := "[]" + elemTypeStr
+
+			fmt.Fprintf(b, "\targ%d := make(%s, 0)\n", i, sliceTypeStr)
 			fmt.Fprintf(b, "\tfor _, v := range a%d.(*data.ArrayValue).Value {\n", i)
-			fmt.Fprintf(b, "\t\targ%d = append(arg%d, v)\n", i, i)
+			// 将 any 转为具体元素类型再追加；若元素类型为 any，则无需断言
+			if elemTypeStr == "any" || elemTypeStr == "interface{}" {
+				fmt.Fprintf(b, "\t\targ%d = append(arg%d, v)\n", i, i)
+			} else {
+				fmt.Fprintf(b, "\t\targ%d = append(arg%d, v.(%s))\n", i, i, elemTypeStr)
+			}
 			fmt.Fprintf(b, "\t}\n")
 		default:
 			typeStr := t.String()
@@ -278,7 +298,12 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 			retT = mt.Out(0)
 		}
 		if retT.Kind() == reflect.Ptr && retT.Elem().Kind() == reflect.Struct {
+			// 返回 *struct 类型，需要生成代理类
 			retName := retT.Elem().Name()
+			fmt.Fprintf(b, "\treturn data.NewClassValue(%sNew%sClassFrom(ret0), ctx), nil\n}\n\n", retCtorPrefix, retName)
+		} else if retT.Kind() == reflect.Interface && retT.PkgPath() != "" && retT.Name() != "" {
+			// 返回具名接口类型，需要生成代理类
+			retName := retT.Name()
 			fmt.Fprintf(b, "\treturn data.NewClassValue(%sNew%sClassFrom(ret0), ctx), nil\n}\n\n", retCtorPrefix, retName)
 		} else {
 			switch retT.Kind() {
