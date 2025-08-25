@@ -363,11 +363,7 @@ func generateInterfaceProxy(iface reflect.Type, opt GenOptions) error {
 		return err
 	}
 
-	// 注册类并尝试生成/更新 load.go
-	registerClass(pkgName, typeName)
-	if err := generateLoadFile(pkgName, opt); err != nil {
-		fmt.Fprintf(os.Stderr, "递归生成 load.go 失败: %v\n", err)
-	}
+	// 接口类不注册到 load.go（避免需要无参构造）
 	return nil
 }
 
