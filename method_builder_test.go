@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 )
 
 func Test_buildMethodFileBody(t *testing.T) {
 	// 处理 sql 包函数
 	sqlArray := []any{
 		sql.Open,
+		time.Now,
 	}
 
 	outRoot := "origami"

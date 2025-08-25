@@ -17,6 +17,10 @@ type GenOptions struct {
 	OutputRoot string
 	// 自定义 GetName 拼接前缀；为空则使用源包名
 	NamePrefix string
+	// 最大递归生成层次（<=0 表示不限制）
+	MaxDepth int
+	// 当前递归层次（内部使用）
+	currentDepth int
 }
 
 // 全局缓存，防止递归死循环
@@ -116,7 +120,7 @@ func GenerateFromConstructor(fn any, opt GenOptions) error {
 		for oi := 0; oi < mt.NumOut(); oi++ {
 			outType := mt.Out(oi)
 			if isTypeNeedsProxy(outType) {
-				_ = generateProxyFromType(outType, opt)
+				_ = generateProxyFromTypeWithDepth(outType, &opt)
 			}
 		}
 		// 若方法参数含 *struct（排除 context.Context），也生成对应代理
@@ -127,7 +131,7 @@ func GenerateFromConstructor(fn any, opt GenOptions) error {
 				if pt.Elem().PkgPath() == "context" && pt.Elem().Name() == "Context" {
 					continue
 				}
-				_ = generateClassFromType(pt, opt)
+				_ = generateProxyFromTypeWithDepth(pt, &opt)
 			}
 		}
 	}
@@ -252,7 +256,7 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 		for oi := 0; oi < mt.NumOut(); oi++ {
 			outType := mt.Out(oi)
 			if isTypeNeedsProxy(outType) {
-				_ = generateProxyFromType(outType, opt)
+				_ = generateProxyFromTypeWithDepth(outType, &opt)
 			}
 		}
 		// 检查方法参数
@@ -263,7 +267,7 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 				if pt.Elem().PkgPath() == "context" && pt.Elem().Name() == "Context" {
 					continue
 				}
-				_ = generateClassFromType(pt, opt)
+				_ = generateProxyFromTypeWithDepth(pt, &opt)
 			}
 		}
 	}
@@ -290,6 +294,19 @@ func generateProxyFromType(typ reflect.Type, opt GenOptions) error {
 		return generateInterfaceProxy(typ, opt)
 	}
 	return fmt.Errorf("不支持的类型: %s", typ.String())
+}
+
+// 带深度控制的代理生成功能
+func generateProxyFromTypeWithDepth(typ reflect.Type, opt *GenOptions) error {
+	// 深度检查：首次进入为 0 层
+	if opt != nil && opt.MaxDepth > 0 {
+		if opt.currentDepth >= opt.MaxDepth {
+			return nil
+		}
+		opt.currentDepth++
+		defer func() { opt.currentDepth-- }()
+	}
+	return generateProxyFromType(typ, *opt)
 }
 
 // generateInterfaceProxy: 为接口类型生成代理类，复用现有的生成逻辑
@@ -340,7 +357,7 @@ func generateInterfaceProxy(iface reflect.Type, opt GenOptions) error {
 		for oi := 0; oi < mt.NumOut(); oi++ {
 			outType := mt.Out(oi)
 			if isTypeNeedsProxy(outType) {
-				_ = generateProxyFromType(outType, opt)
+				_ = generateProxyFromTypeWithDepth(outType, &opt)
 			}
 		}
 

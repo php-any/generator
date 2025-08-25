@@ -232,19 +232,15 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 			fmt.Fprintf(b, "\targ%[1]d := arg%[1]dClass.source\n", i)
 			continue
 		}
-		// interface / named interface
+		// interface 参数（包括具名接口与内建接口，如 error 或 interface{}）统一处理
 		if paramTypes[i].Kind() == reflect.Interface {
-			if paramTypes[i].PkgPath() != "" && paramTypes[i].Name() != "" {
-				// 具名接口：支持 ClassValue 与 AnyValue 双路径（GetSource() any + 断言）
-				fullIface := paramTypes[i].String()
-				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, fullIface)
-				fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
-				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { arg%[1]d = p.GetSource().(%s) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\")) }\n", i, fullIface, i)
-				fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, fullIface)
-				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\"))\n\t}\n", i)
-			} else {
-				fmt.Fprintf(b, "\targ%[1]d := a%[1]d.(*data.AnyValue).Value\n", i)
-			}
+			ifaceStr := paramTypes[i].String()
+			fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, ifaceStr)
+			switchHeader := "\tswitch v := a%[1]d.(type) {\n"
+			fmt.Fprintf(b, switchHeader, i)
+			fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { if src := p.GetSource(); src != nil { arg%[1]d = src.(%s) } } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\")) }\n", i, ifaceStr, i)
+			fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\tif v.Value != nil { arg%[1]d = v.Value.(%s) }\n", i, ifaceStr)
+			fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\"))\n\t}\n", i)
 			continue
 		}
 		// 其它常见类型
@@ -436,5 +432,3 @@ func typeToKindLabel(t reflect.Type) string {
 
 	return "interface"
 }
-
-

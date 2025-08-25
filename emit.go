@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"go/format"
 	"os"
+	"path/filepath"
 )
 
 // EmitFile 生成文件，自动 gofmt
@@ -27,11 +28,6 @@ func EmitFile(targetPath string, pkg string, body string) error {
 }
 
 func filepathDir(path string) string {
-	// 避免引入 path/filepath 只为 Dir
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			return path[:i]
-		}
-	}
-	return "."
+	// 使用标准库的 filepath.Dir 来处理跨平台路径
+	return filepath.Dir(path)
 }
