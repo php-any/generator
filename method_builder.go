@@ -166,11 +166,19 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 			fmt.Fprintf(b, "\targ%[1]d := arg%[1]dClass.source\n", i)
 			continue
 		}
-		// interface{} 参数：从 AnyValue 中提取并转换类型（将源包短名替换为导入别名）
+		// 接口参数：支持 ClassValue 与 AnyValue 双路径，GetSource() 返回 any
 		if t.Kind() == reflect.Interface {
-			typeStr := t.String()
-			typeStr = strings.ReplaceAll(typeStr, pkgBaseName(srcPkgPath)+".", importAlias+".")
-			fmt.Fprintf(b, "\targ%[1]d := a%[1]d.(*data.AnyValue).Value.(%s)\n", i, typeStr)
+			fullIface := t.String()
+			ifaceName := t.Name()
+			if t.PkgPath() != "" && ifaceName != "" {
+				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, fullIface)
+				fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
+				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { arg%[1]d = p.GetSource().(%s) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\")) }\n", i, fullIface, i)
+				fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, fullIface)
+				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\"))\n\t}\n", i)
+			} else {
+				fmt.Fprintf(b, "\targ%[1]d := a%[1]d.(*data.AnyValue).Value\n", i)
+			}
 			continue
 		}
 		// 其它常见类型
@@ -217,9 +225,18 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 			}
 			fmt.Fprintf(b, "\t}\n")
 		default:
-			typeStr := t.String()
-			typeStr = strings.ReplaceAll(typeStr, pkgBaseName(srcPkgPath)+".", importAlias+".")
-			fmt.Fprintf(b, "\targ%[1]d := a%[1]d.(*data.AnyValue).Value.(%s)\n", i, typeStr)
+			// 具名 struct 支持双路径；其它具名基础类型直接断言；无名类型走 AnyValue
+			if base.Kind() == reflect.Struct && base.PkgPath() != "" && base.Name() != "" {
+				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, base.String())
+				fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
+				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\targ%[1]d = v.Class.(*%sClass).GetSource().(%s)\n", i, base.Name(), base.String())
+				fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, base.String())
+				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\"))\n\t}\n", i)
+			} else {
+				typeStr := t.String()
+				typeStr = strings.ReplaceAll(typeStr, pkgBaseName(srcPkgPath)+".", importAlias+".")
+				fmt.Fprintf(b, "\targ%[1]d := a%[1]d.(*data.AnyValue).Value.(%s)\n", i, typeStr)
+			}
 		}
 	}
 	b.WriteString("\n")

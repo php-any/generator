@@ -71,6 +71,16 @@ func generateTopFunction(fn any, opt GenOptions) error {
 	if err := EmitFile(file, pkgName, body); err != nil {
 		return err
 	}
+
+	// 为参数类型生成代理类（如果需要）
+	for i := 0; i < typ.NumIn(); i++ {
+		paramType := typ.In(i)
+		if paramType.Kind() == reflect.Interface && paramType.PkgPath() != "" && paramType.Name() != "" {
+			// 为具名接口类型生成代理类
+			_ = generateInterfaceProxy(paramType, opt)
+		}
+	}
+
 	// 注册函数，并尝试生成/更新 load.go
 	registerFunction(pkgName, upperFirst(simpleName))
 	_ = generateLoadFile(pkgName, opt)
@@ -134,6 +144,16 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 			continue
 		default:
 			collectPkgPaths(paramTypes[i], usedPkgs)
+		}
+	}
+	// 额外补充：具名 struct（如 time.Time）需要显式导入其所属包
+	for i := 0; i < numIn; i++ {
+		base := paramTypes[i]
+		for base.Kind() == reflect.Ptr {
+			base = base.Elem()
+		}
+		if base.Kind() == reflect.Struct && base.PkgPath() != "" && base.Name() != "" {
+			usedPkgs[base.PkgPath()] = true
 		}
 	}
 	// 补充：time.Duration 属于命名的 int64，需要显式导入 time
@@ -215,7 +235,13 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 		// interface / named interface
 		if paramTypes[i].Kind() == reflect.Interface {
 			if paramTypes[i].PkgPath() != "" && paramTypes[i].Name() != "" {
-				fmt.Fprintf(b, "\targ%[1]d := a%[1]d.(*data.AnyValue).Value.(%s)\n", i, paramTypes[i].String())
+				// 具名接口：支持 ClassValue 与 AnyValue 双路径（GetSource() any + 断言）
+				fullIface := paramTypes[i].String()
+				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, fullIface)
+				fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
+				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { arg%[1]d = p.GetSource().(%s) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\")) }\n", i, fullIface, i)
+				fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, fullIface)
+				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\"))\n\t}\n", i)
 			} else {
 				fmt.Fprintf(b, "\targ%[1]d := a%[1]d.(*data.AnyValue).Value\n", i)
 			}
@@ -241,7 +267,16 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 			// 当前生成的是 NewParameter，如果遇到问题，请考虑修改为 NewParametersReference
 			fmt.Fprintf(b, "\targ%d := *a%d.(*data.ArrayValue)\n", i, i)
 		default:
-			fmt.Fprintf(b, "\targ%d := a%d.(*data.InterfaceValue).AsInterface()\n", i, i)
+			// 具名 struct/具名基础类型：支持 ClassValue/AnyValue 双路径（通过 GetSource 接口）
+			if base.PkgPath() != "" && base.Name() != "" {
+				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, base.String())
+				fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
+				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { arg%[1]d = p.GetSource().(%s) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\")) }\n", i, base.String(), i)
+				fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, base.String())
+				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\"))\n\t}\n", i)
+			} else {
+				fmt.Fprintf(b, "\targ%d := a%d.(*data.AnyValue).Value\n", i, i)
+			}
 		}
 	}
 	// 调用并接收返回值
@@ -401,3 +436,5 @@ func typeToKindLabel(t reflect.Type) string {
 
 	return "interface"
 }
+
+

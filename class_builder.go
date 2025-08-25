@@ -29,22 +29,26 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 		}
 	}
 
-	// New<Class>Class() - 保持兼容（source: nil）
-	fmt.Fprintf(b, "func New%[1]sClass() data.ClassStmt {\n", typeName)
+	// 统一收集方法名，供后续使用
 	names := make([]string, 0, len(methods))
 	for n := range methods {
 		names = append(names, n)
 	}
 	sort.Strings(names)
-	fmt.Fprintf(b, "\treturn &%[1]sClass{\n\t\tsource: nil,\n", typeName)
-	for _, n := range names {
-		// 字段名用小写；类型名使用导出方法名，确保形如 StmtCloseMethod
-		fmt.Fprintf(b, "\t\t%s: &%s%sMethod{source: nil},\n", lowerFirst(n), typeName, n)
+
+	// New<Class>Class() - 仅对 struct 生成；接口类型不生成无参构造
+	if structType != nil {
+		fmt.Fprintf(b, "func New%[1]sClass() data.ClassStmt {\n", typeName)
+		fmt.Fprintf(b, "\treturn &%[1]sClass{\n\t\tsource: nil,\n", typeName)
+		for _, n := range names {
+			// 字段名用小写；类型名使用导出方法名，确保形如 StmtCloseMethod
+			fmt.Fprintf(b, "\t\t%s: &%s%sMethod{source: nil},\n", lowerFirst(n), typeName, n)
+		}
+		for _, f := range fields {
+			fmt.Fprintf(b, "\t\tprop%[1]s: node.NewProperty(nil, \"%[1]s\", \"public\", true, nil),\n", f.Name)
+		}
+		b.WriteString("\t}\n}\n\n")
 	}
-	for _, f := range fields {
-		fmt.Fprintf(b, "\t\tprop%[1]s: node.NewProperty(nil, \"%[1]s\", \"public\", true, nil),\n", f.Name)
-	}
-	b.WriteString("\t}\n}\n\n")
 
 	// New<Class>ClassFrom(source alias.Type or *alias.Type)
 	star := ""
@@ -77,6 +81,9 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 	fmt.Fprintf(b, "func (s *%[1]sClass) GetExtend() *string { return nil }\n", typeName)
 	fmt.Fprintf(b, "func (s *%[1]sClass) GetImplements() []string { return nil }\n", typeName)
 	fmt.Fprintf(b, "func (s *%[1]sClass) AsString() string { return \"%[2]s{}\" }\n", typeName, typeName)
+
+	// 暴露底层 source，便于参数转换（接口/结构体统一）
+	fmt.Fprintf(b, "func (s *%[1]sClass) GetSource() any { return s.source }\n", typeName)
 
 	// GetProperty 实现
 	if len(fields) > 0 {
