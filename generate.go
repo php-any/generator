@@ -394,6 +394,10 @@ func isTypeNeedsProxy(t reflect.Type) bool {
 	if t.Kind() == reflect.Ptr && t.Elem() != nil && t.Elem().Kind() == reflect.Struct {
 		return true
 	}
+	// 检查 struct 类型（值类型结构体）
+	if t.Kind() == reflect.Struct && t.PkgPath() != "" && t.Name() != "" {
+		return true
+	}
 	// 检查具名接口类型（如 sql.Result）
 	if t.Kind() == reflect.Interface && t.PkgPath() != "" && t.Name() != "" {
 		return true

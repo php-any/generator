@@ -112,7 +112,7 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 	if retPkgBase != "" {
 		modPath := getModulePath()
 		if modPath != "" {
-			fmt.Fprintf(b, "\t\"%s/origami/%s\"\n", modPath, retPkgBase)
+			fmt.Fprintf(b, "\t\"github.com/php-any/origami/std/%s\"\n", retPkgBase)
 		}
 	}
 	// time.Duration 入参需要导入 time 包
@@ -215,27 +215,45 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 			}
 			sliceTypeStr := "[]" + elemTypeStr
 
-			fmt.Fprintf(b, "\targ%d := make(%s, 0)\n", i, sliceTypeStr)
-			fmt.Fprintf(b, "\tfor _, v := range a%d.(*data.ArrayValue).Value {\n", i)
-			// 将 any 转为具体元素类型再追加；若元素类型为 any，则无需断言
-			if elemTypeStr == "any" || elemTypeStr == "interface{}" {
-				fmt.Fprintf(b, "\t\targ%d = append(arg%d, v)\n", i, i)
-			} else {
-				fmt.Fprintf(b, "\t\targ%d = append(arg%d, v.(%s))\n", i, i, elemTypeStr)
-			}
+			fmt.Fprintf(b, "\targ%[1]d := make(%[2]s, 0)\n", i, sliceTypeStr)
+			fmt.Fprintf(b, "\tfor _, v := range a%[1]d.(*data.ArrayValue).Value {\n", i)
+			// 在循环内部对每个元素使用 switch 语句处理
+			fmt.Fprintf(b, "\t\tswitch elemVal := v.(type) {\n")
+			fmt.Fprintf(b, "\t\tcase *data.ClassValue:\n\t\t\tif p, ok := elemVal.Class.(interface{ GetSource() any }); ok { arg%[1]d = append(arg%[1]d, p.GetSource().(%[2]s)) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %[1]d\")) }\n", i, elemTypeStr, i)
+			fmt.Fprintf(b, "\t\tcase *data.AnyValue:\n\t\t\targ%[1]d = append(arg%[1]d, elemVal.Value.(%[2]s))\n", i, elemTypeStr)
+			// fmt.Fprintf(b, "\t\tdefault:\n\t\t\targ%[1]d = append(arg%[1]d, elemVal.(%[2]s))\n", i, elemTypeStr)
+			fmt.Fprintf(b, "\t\t}\n")
 			fmt.Fprintf(b, "\t}\n")
+		case reflect.Func:
+			// 函数类型：支持 ClassValue/AnyValue 双路径
+			funcTypeStr := base.String()
+			// 将整个函数签名中的包路径替换为导入别名（如 func(*application.Context) -> func(*applicationsrc.Context)）
+			// 检查函数签名中是否包含源包的引用
+			if strings.Contains(funcTypeStr, pkgBaseName(srcPkgPath)+".") {
+				funcTypeStr = strings.ReplaceAll(funcTypeStr, pkgBaseName(srcPkgPath)+".", importAlias+".")
+			}
+			fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, funcTypeStr)
+			fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
+			fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { arg%[1]d = p.GetSource().(%[2]s) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %[1]d\")) }\n", i, funcTypeStr, i)
+			fmt.Fprintf(b, "\t\tcase *data.AnyValue:\n\t\t\targ%[1]d = v.Value.(%s)\n", i, funcTypeStr)
+			fmt.Fprintf(b, "\t\tdefault:\n\t\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %[1]d\"))\n\t}\n", i)
 		default:
-			// 具名 struct 支持双路径；其它具名基础类型直接断言；无名类型走 AnyValue
-			if base.Kind() == reflect.Struct && base.PkgPath() != "" && base.Name() != "" {
-				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, base.String())
+			// 具名 struct/具名基础类型：支持 ClassValue/AnyValue 双路径（通过 GetSource 接口）
+			if base.PkgPath() != "" && base.Name() != "" {
+				// 使用 base.String() 获取完整类型，然后替换包路径为导入别名
+				typeStr := base.String()
+				// 将包路径替换为导入别名（如 application.Service -> applicationsrc.Service）
+				if base.PkgPath() == srcPkgPath {
+					// 同包类型，使用导入别名
+					typeStr = importAlias + "." + base.Name()
+				}
+				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, typeStr)
 				fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
-				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\targ%[1]d = v.Class.(*%sClass).GetSource().(%s)\n", i, base.Name(), base.String())
-				fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, base.String())
-				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\"))\n\t}\n", i)
+				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { arg%[1]d = p.GetSource().(%[2]s) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %[1]d\")) }\n", i, typeStr)
+				fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, typeStr)
+				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %[1]d\"))\n\t}\n", i)
 			} else {
-				typeStr := t.String()
-				typeStr = strings.ReplaceAll(typeStr, pkgBaseName(srcPkgPath)+".", importAlias+".")
-				fmt.Fprintf(b, "\targ%[1]d := a%[1]d.(*data.AnyValue).Value.(%s)\n", i, typeStr)
+				fmt.Fprintf(b, "\targ%[1]d := a%[1]d.(*data.AnyValue).Value\n", i)
 			}
 		}
 	}

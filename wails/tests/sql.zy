@@ -1,0 +1,7 @@
+namespace test;
+
+use wails\application;
+
+$app = new application();
+
+

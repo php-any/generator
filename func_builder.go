@@ -89,6 +89,7 @@ func generateTopFunction(fn any, opt GenOptions) error {
 
 func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullName string, fnType reflect.Type, pc uintptr, opt GenOptions) string {
 
+	importAlias := pkgBaseName(srcPkgPath) + "src"
 	numIn := fnType.NumIn()
 	numOut := fnType.NumOut()
 
@@ -184,7 +185,7 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 		fmt.Fprintf(b, "\t\"github.com/php-any/origami/%s\"\n", retPkgBase)
 	}
 	// 源包与必需包
-	fmt.Fprintf(b, "\t\"%s\"\n", srcPkgPath)
+	fmt.Fprintf(b, "\t%s %q\n", importAlias, srcPkgPath)
 	b.WriteString("\t\"github.com/php-any/origami/data\"\n")
 	if numIn > 0 {
 		b.WriteString("\t\"github.com/php-any/origami/node\"\n")
@@ -265,10 +266,17 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 		default:
 			// 具名 struct/具名基础类型：支持 ClassValue/AnyValue 双路径（通过 GetSource 接口）
 			if base.PkgPath() != "" && base.Name() != "" {
-				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, base.String())
+				// 使用正确的类型字符串，替换包路径为导入别名
+				typeStr := base.String()
+				// 将包路径替换为导入别名（如 application.Options -> applicationsrc.Options）
+				if base.PkgPath() == srcPkgPath {
+					// 同包类型，使用导入别名
+					typeStr = importAlias + "." + base.Name()
+				}
+				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, typeStr)
 				fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
-				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { arg%[1]d = p.GetSource().(%s) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\")) }\n", i, base.String(), i)
-				fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, base.String())
+				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { arg%[1]d = p.GetSource().(%s) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\")) }\n", i, typeStr, i)
+				fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, typeStr)
 				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\"))\n\t}\n", i)
 			} else {
 				fmt.Fprintf(b, "\targ%d := a%d.(*data.AnyValue).Value\n", i, i)
@@ -298,7 +306,7 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 	} else {
 		b.WriteString("\t")
 	}
-	fmt.Fprintf(b, "%s.%s(", pkgBaseName(srcPkgPath), funcName)
+	fmt.Fprintf(b, "%s.%s(", importAlias, funcName)
 	for i := 0; i < numIn; i++ {
 		if i > 0 {
 			b.WriteString(", ")

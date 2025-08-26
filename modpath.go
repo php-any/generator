@@ -42,5 +42,3 @@ func getModulePath() string {
 	})
 	return modulePath
 }
-
-
