@@ -9,9 +9,12 @@ import (
 )
 
 func Test_buildMethodFileBody(t *testing.T) {
-	// 处理 sql 包函数
 	sqlArray := []any{
 		application.New,
+		application.NewMenu,
+		application.NewAppMenu,
+		application.NewWindowEvent,
+		application.WebviewWindowOptions{},
 	}
 
 	outRoot := "origami"

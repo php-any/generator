@@ -63,6 +63,13 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 		if base.Kind() == reflect.Ptr {
 			base = base.Elem()
 		}
+		// 命名的基础类型别名也需要导入其所属包（例如 events.WindowEventType）
+		if base.PkgPath() != "" && base.Name() != "" {
+			switch base.Kind() {
+			case reflect.Int, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Float32, reflect.Float64, reflect.Bool, reflect.String:
+				usedPkgs[base.PkgPath()] = true
+			}
+		}
 		// 跳过 *struct（直接解包 source，不做断言）与基础类型、slice
 		if isPtrToStruct(t) || base.Kind() == reflect.String || base.Kind() == reflect.Int || base.Kind() == reflect.Int64 || base.Kind() == reflect.Bool || base.Kind() == reflect.Slice {
 			continue
@@ -143,7 +150,7 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 	// Call
 	fmt.Fprintf(b, "func (h *%s%sMethod) Call(ctx data.Context) (data.GetValue, data.Control) {\n\n", typeName, m.Name)
 	for i := 0; i < numIn; i++ {
-		fmt.Fprintf(b, "\ta%d, ok := ctx.GetIndexValue(%d)\n\tif !ok { return nil, data.NewErrorThrow(nil, errors.New(\"缺少参数, index: %d\")) }\n\n", i, i, i)
+		fmt.Fprintf(b, "\ta%d, ok := ctx.GetIndexValue(%d)\n\tif !ok { return nil, data.NewErrorThrow(nil, errors.New(\"%s.%s 缺少参数, index: %d\")) }\n\n", i, i, typeName, m.Name, i)
 	}
 	// 参数预处理：按类型严格处理
 	for i, t := range paramTypes {
@@ -159,34 +166,74 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 			fmt.Fprintf(os.Stderr, "   生成的文件：origami/%s/%s_%s_method.go\n\n", pkgName, strings.ToLower(typeName), strings.ToLower(m.Name))
 		}
 
-		// *struct 参数：从代理类取出具体 source
+		// *struct 参数：支持 ClassValue 与 AnyValue 双路径
 		if isPtrToStruct(t) {
-			clsName := t.Elem().Name()
-			fmt.Fprintf(b, "\targ%[1]dClass := a%[1]d.(*data.ClassValue).Class.(*%sClass)\n", i, clsName)
-			fmt.Fprintf(b, "\targ%[1]d := arg%[1]dClass.source\n", i)
+			ptrTypeStr := t.String()
+			// 将同包类型包前缀替换为导入别名（如 *application.Request -> *applicationsrc.Request）
+			if strings.Contains(ptrTypeStr, pkgBaseName(srcPkgPath)+".") {
+				ptrTypeStr = strings.ReplaceAll(ptrTypeStr, pkgBaseName(srcPkgPath)+".", importAlias+".")
+			}
+			fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, ptrTypeStr)
+			fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
+			fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { \n\t\t\t// 检查 GetSource 返回的类型，如果是指针则解引用\n\t\t\tif src := p.GetSource(); src != nil {\n\t\t\t\tif ptr, ok := src.(*%s); ok {\n\t\t\t\t\targ%d = *ptr\n\t\t\t\t} else {\n\t\t\t\t\targ%d = src.(%s)\n\t\t\t\t}\n\t\t\t}\n\t\t} else { return nil, data.NewErrorThrow(nil, errors.New(\"%s.%s 参数类型不支持, index: %d\")) }\n", ptrTypeStr, i, i, ptrTypeStr, typeName, m.Name, i)
+			fmt.Fprintf(b, "\tcase *data.ProxyValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { \n\t\t\tif src := p.GetSource(); src != nil {\n\t\t\t\tif ptr, ok := src.(*%[2]s); ok { arg%[1]d = *ptr } else { arg%[1]d = src.(%[2]s) }\n\t\t\t}\n\t\t} else { return nil, data.NewErrorThrow(nil, errors.New(\"%[3]s.%[4]s 参数类型不支持, index: %[1]d\")) }\n", i, ptrTypeStr, typeName, m.Name)
+			fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, ptrTypeStr)
+			fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"%s.%s 参数类型不支持, index: %d\"))\n\t}\n", typeName, m.Name, i)
 			continue
 		}
 		// 接口参数：支持 ClassValue 与 AnyValue 双路径，GetSource() 返回 any
 		if t.Kind() == reflect.Interface {
 			fullIface := t.String()
+			// 将同包接口类型的包前缀替换为导入别名（如 application.Window -> applicationsrc.Window）
+			if strings.Contains(fullIface, pkgBaseName(srcPkgPath)+".") {
+				fullIface = strings.ReplaceAll(fullIface, pkgBaseName(srcPkgPath)+".", importAlias+".")
+			}
 			ifaceName := t.Name()
 			if t.PkgPath() != "" && ifaceName != "" {
 				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, fullIface)
 				fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
-				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { arg%[1]d = p.GetSource().(%s) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\")) }\n", i, fullIface, i)
+				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { \n\t\t\t// 检查 GetSource 返回的类型，如果是指针则解引用\n\t\t\tif src := p.GetSource(); src != nil {\n\t\t\t\tif ptr, ok := src.(*%s); ok {\n\t\t\t\t\targ%d = *ptr\n\t\t\t\t} else {\n\t\t\t\t\targ%d = src.(%s)\n\t\t\t\t}\n\t\t\t}\n\t\t} else { return nil, data.NewErrorThrow(nil, errors.New(\"%s.%s 参数类型不支持, index: %d\")) }\n", fullIface, i, i, fullIface, typeName, m.Name, i)
+				fmt.Fprintf(b, "\tcase *data.ProxyValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { if src := p.GetSource(); src != nil { if ptr, ok := src.(*%[2]s); ok { arg%[1]d = *ptr } else { arg%[1]d = src.(%[2]s) } } } else { return nil, data.NewErrorThrow(nil, errors.New(\"%[3]s.%[4]s 参数类型不支持, index: %[1]d\")) }\n", i, fullIface, typeName, m.Name)
 				fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, fullIface)
-				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\"))\n\t}\n", i)
+				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"%s.%s 参数类型不支持, index: %d\"))\n\t}\n", typeName, m.Name, i)
 			} else {
 				fmt.Fprintf(b, "\targ%[1]d := a%[1]d.(*data.AnyValue).Value\n", i)
 			}
 			continue
 		}
 		// 其它常见类型
+		// 特判：具名基础类型别名（同包或跨包），例如 events.WindowEventType 基于 uint
+		if base.Name() != "" && base.PkgPath() != "" {
+			var typeStr string
+			if base.PkgPath() == srcPkgPath {
+				typeStr = importAlias + "." + base.Name()
+			} else {
+				typeStr = pkgBaseName(base.PkgPath()) + "." + base.Name()
+			}
+			switch base.Kind() {
+			case reflect.Int:
+				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, typeStr)
+				fmt.Fprintf(b, "\targ%[1]dInt, err := a%[1]d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n\targ%[1]d = %s(arg%[1]dInt)\n", i, typeStr)
+				continue
+			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, typeStr)
+				fmt.Fprintf(b, "\targ%[1]dInt, err := a%[1]d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n\targ%[1]d = %s(arg%[1]dInt)\n", i, typeStr)
+				continue
+			case reflect.Float32, reflect.Float64:
+				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, typeStr)
+				fmt.Fprintf(b, "\targ%[1]dF, err := a%[1]d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n\targ%[1]d = %s(float64(arg%[1]dF))\n", i, typeStr)
+				continue
+			}
+		}
+
 		switch base.Kind() {
 		case reflect.String:
 			fmt.Fprintf(b, "\targ%d := a%d.(*data.StringValue).AsString()\n", i, i)
 		case reflect.Int:
 			fmt.Fprintf(b, "\targ%d, err := a%d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n", i, i)
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			fmt.Fprintf(b, "\targ%[1]dInt, err := a%[1]d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n\targ%[1]d := %s(arg%[1]dInt)\n", i, base.Kind().String())
+			// 注意：Go 语法中不能直接用 Kind() 作为类型名，此分支仅用于快速断言基础 uint，具名 alias 会在上面的具名基础类型分支处理
 		case reflect.Int64:
 			// time.Duration 特判
 			if base.PkgPath() == "time" && base.Name() == "Duration" {
@@ -219,24 +266,32 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 			fmt.Fprintf(b, "\tfor _, v := range a%[1]d.(*data.ArrayValue).Value {\n", i)
 			// 在循环内部对每个元素使用 switch 语句处理
 			fmt.Fprintf(b, "\t\tswitch elemVal := v.(type) {\n")
-			fmt.Fprintf(b, "\t\tcase *data.ClassValue:\n\t\t\tif p, ok := elemVal.Class.(interface{ GetSource() any }); ok { arg%[1]d = append(arg%[1]d, p.GetSource().(%[2]s)) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %[1]d\")) }\n", i, elemTypeStr, i)
+			fmt.Fprintf(b, "\t\tcase *data.ClassValue:\n\t\t\tif p, ok := elemVal.Class.(interface{ GetSource() any }); ok { \n\t\t\t\t// 检查 GetSource 返回的类型，如果是指针则解引用\n\t\t\t\tif src := p.GetSource(); src != nil {\n\t\t\t\t\tif ptr, ok := src.(*%s); ok {\n\t\t\t\t\t\targ%d = append(arg%d, *ptr)\n\t\t\t\t\t} else {\n\t\t\t\t\t\targ%d = append(arg%d, src.(%s))\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t} else { return nil, data.NewErrorThrow(nil, errors.New(\"%s.%s 参数类型不支持, index: %d\")) }\n", elemTypeStr, i, i, i, i, elemTypeStr, typeName, m.Name, i)
+			fmt.Fprintf(b, "\t\tcase *data.ProxyValue:\n\t\t\tif p, ok := elemVal.Class.(interface{ GetSource() any }); ok { if src := p.GetSource(); src != nil { if ptr, ok := src.(*%[2]s); ok { arg%[1]d = append(arg%[1]d, *ptr) } else { arg%[1]d = append(arg%[1]d, src.(%[2]s)) } } } else { return nil, data.NewErrorThrow(nil, errors.New(\"%[3]s.%[4]s 参数类型不支持, index: %[1]d\")) }\n", i, elemTypeStr, typeName, m.Name)
 			fmt.Fprintf(b, "\t\tcase *data.AnyValue:\n\t\t\targ%[1]d = append(arg%[1]d, elemVal.Value.(%[2]s))\n", i, elemTypeStr)
 			// fmt.Fprintf(b, "\t\tdefault:\n\t\t\targ%[1]d = append(arg%[1]d, elemVal.(%[2]s))\n", i, elemTypeStr)
 			fmt.Fprintf(b, "\t\t}\n")
 			fmt.Fprintf(b, "\t}\n")
 		case reflect.Func:
-			// 函数类型：支持 ClassValue/AnyValue 双路径
+			// 函数类型：使用 *data.FuncValue 包装为 Go 函数并在内部调用 fnv.Call(ctx)
 			funcTypeStr := base.String()
-			// 将整个函数签名中的包路径替换为导入别名（如 func(*application.Context) -> func(*applicationsrc.Context)）
-			// 检查函数签名中是否包含源包的引用
 			if strings.Contains(funcTypeStr, pkgBaseName(srcPkgPath)+".") {
 				funcTypeStr = strings.ReplaceAll(funcTypeStr, pkgBaseName(srcPkgPath)+".", importAlias+".")
 			}
+			// 生成形参列表（仅用于签名，不使用参数）
+			paramList := make([]string, 0, base.NumIn())
+			for pi := 0; pi < base.NumIn(); pi++ {
+				pt := base.In(pi)
+				ptStr := pt.String()
+				ptStr = strings.ReplaceAll(ptStr, pkgBaseName(srcPkgPath)+".", importAlias+".")
+				paramList = append(paramList, fmt.Sprintf("p%d %s", pi, ptStr))
+			}
 			fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, funcTypeStr)
-			fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
-			fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { arg%[1]d = p.GetSource().(%[2]s) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %[1]d\")) }\n", i, funcTypeStr, i)
-			fmt.Fprintf(b, "\t\tcase *data.AnyValue:\n\t\t\targ%[1]d = v.Value.(%s)\n", i, funcTypeStr)
-			fmt.Fprintf(b, "\t\tdefault:\n\t\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %[1]d\"))\n\t}\n", i)
+			fmt.Fprintf(b, "\tswitch fnv := a%[1]d.(type) {\n", i)
+			fmt.Fprintf(b, "\tcase *data.FuncValue:\n\t\targ%[1]d = func(%s) { fnv.Call(ctx) }\n", i, strings.Join(paramList, ", "))
+			fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"%s.%s 参数类型不支持, index: %d\"))\n\t}\n", typeName, m.Name, i)
+		case reflect.Float32, reflect.Float64:
+			fmt.Fprintf(b, "\targ%[1]dF, err := a%[1]d.(*data.IntValue).AsInt()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n\targ%[1]d := float64(arg%[1]dF)\n", i)
 		default:
 			// 具名 struct/具名基础类型：支持 ClassValue/AnyValue 双路径（通过 GetSource 接口）
 			if base.PkgPath() != "" && base.Name() != "" {
@@ -249,9 +304,11 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 				}
 				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, typeStr)
 				fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
-				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { arg%[1]d = p.GetSource().(%[2]s) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %[1]d\")) }\n", i, typeStr)
+				// 构建复杂的类型断言逻辑
+				b.WriteString(fmt.Sprintf("\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { \n\t\t\t// 检查 GetSource 返回的类型，如果是指针则解引用\n\t\t\tif src := p.GetSource(); src != nil {\n\t\t\t\tif ptr, ok := src.(*%s); ok {\n\t\t\t\t\targ%d = *ptr\n\t\t\t\t} else {\n\t\t\t\t\targ%d = src.(%s)\n\t\t\t\t}\n\t\t\t}\n\t\t} else { return nil, data.NewErrorThrow(nil, errors.New(\"%s.%s 参数类型不支持, index: %d\")) }\n", typeStr, i, i, typeStr, typeName, m.Name, i))
+				b.WriteString(fmt.Sprintf("\tcase *data.ProxyValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { if src := p.GetSource(); src != nil { if ptr, ok := src.(*%s); ok { arg%d = *ptr } else { arg%d = src.(%s) } } } else { return nil, data.NewErrorThrow(nil, errors.New(\"%s.%s 参数类型不支持, index: %d\")) }\n", typeStr, i, i, typeStr, typeName, m.Name, i))
 				fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, typeStr)
-				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %[1]d\"))\n\t}\n", i)
+				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"%s.%s 参数类型不支持, index: %d\"))\n\t}\n", typeName, m.Name, i)
 			} else {
 				fmt.Fprintf(b, "\targ%[1]d := a%[1]d.(*data.AnyValue).Value\n", i)
 			}
@@ -336,6 +393,10 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 			// 返回 *struct 类型，需要生成代理类
 			retName := retT.Elem().Name()
 			fmt.Fprintf(b, "\treturn data.NewClassValue(%sNew%sClassFrom(ret0), ctx), nil\n}\n\n", retCtorPrefix, retName)
+		} else if retT.Kind() == reflect.Struct && retT.PkgPath() != "" && retT.Name() != "" {
+			// 返回 struct 值类型，取地址传入代理构造
+			retName := retT.Name()
+			fmt.Fprintf(b, "\treturn data.NewClassValue(%sNew%sClassFrom(&ret0), ctx), nil\n}\n\n", retCtorPrefix, retName)
 		} else if retT.Kind() == reflect.Interface && retT.PkgPath() != "" && retT.Name() != "" {
 			// 返回具名接口类型，需要生成代理类
 			retName := retT.Name()

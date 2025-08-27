@@ -36,6 +36,19 @@ func effectiveNamePrefix(defaultPkgName string, opt GenOptions) string {
 
 // GenerateFromConstructor：先为函数本身生成函数代理；若返回 *struct，再生成类与方法代理
 func GenerateFromConstructor(fn any, opt GenOptions) error {
+	// 统一入口支持：结构体值 / *struct / 函数
+	t := reflect.TypeOf(fn)
+	if t == nil {
+		return errors.New("输入为 nil，不支持")
+	}
+	// 结构体值：直接生成对应类（取其指针类型）
+	if t.Kind() == reflect.Struct && t.PkgPath() != "" && t.Name() != "" {
+		return generateClassFromType(reflect.PointerTo(t), opt)
+	}
+	// *struct：直接生成对应类
+	if t.Kind() == reflect.Ptr && t.Elem() != nil && t.Elem().Kind() == reflect.Struct {
+		return generateClassFromType(t, opt)
+	}
 	// 先尝试生成顶级函数代理（失败则提示，不阻断后续流程）
 	if err := generateTopFunction(fn, opt); err != nil {
 		// 解析函数名
@@ -133,6 +146,34 @@ func GenerateFromConstructor(fn any, opt GenOptions) error {
 				}
 				_ = generateProxyFromTypeWithDepth(pt, &opt)
 			}
+		}
+	}
+
+	// 在生成类文件前，遍历导出字段并递归生成其类型的代理（接口、struct）
+	for i := 0; i < structType.NumField(); i++ {
+		field := structType.Field(i)
+		if field.PkgPath != "" { // 非导出字段跳过
+			continue
+		}
+		ft := field.Type
+		fmt.Fprintf(os.Stderr, "字段递归: %s.%s => %s\n", typeName, field.Name, ft.String())
+		// 接口类型
+		if ft.Kind() == reflect.Interface && ft.PkgPath() != "" && ft.Name() != "" {
+			fmt.Fprintf(os.Stderr, "  -> 生成接口代理: %s\n", ft.String())
+			_ = generateProxyFromTypeWithDepth(ft, &opt)
+			continue
+		}
+		// *struct 类型
+		if isPtrToStruct(ft) {
+			fmt.Fprintf(os.Stderr, "  -> 生成 *struct 代理: %s\n", ft.String())
+			_ = generateProxyFromTypeWithDepth(ft, &opt)
+			continue
+		}
+		// 值 struct 类型
+		if ft.Kind() == reflect.Struct && ft.PkgPath() != "" && ft.Name() != "" {
+			fmt.Fprintf(os.Stderr, "  -> 生成 struct 代理: &%s\n", ft.String())
+			_ = generateProxyFromTypeWithDepth(reflect.PointerTo(ft), &opt)
+			continue
 		}
 	}
 
@@ -271,6 +312,35 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 			}
 		}
 	}
+
+	// 在生成类文件前，遍历导出字段并递归生成其类型的代理（接口、struct）
+	for i := 0; i < structType.NumField(); i++ {
+		field := structType.Field(i)
+		if field.PkgPath != "" { // 非导出字段跳过
+			continue
+		}
+		ft := field.Type
+		fmt.Fprintf(os.Stderr, "字段递归: %s.%s => %s\n", typeName, field.Name, ft.String())
+		// 接口类型
+		if ft.Kind() == reflect.Interface && ft.PkgPath() != "" && ft.Name() != "" {
+			fmt.Fprintf(os.Stderr, "  -> 生成接口代理: %s\n", ft.String())
+			_ = generateProxyFromTypeWithDepth(ft, &opt)
+			continue
+		}
+		// *struct 类型
+		if isPtrToStruct(ft) {
+			fmt.Fprintf(os.Stderr, "  -> 生成 *struct 代理: %s\n", ft.String())
+			_ = generateProxyFromTypeWithDepth(ft, &opt)
+			continue
+		}
+		// 值 struct 类型
+		if ft.Kind() == reflect.Struct && ft.PkgPath() != "" && ft.Name() != "" {
+			fmt.Fprintf(os.Stderr, "  -> 生成 struct 代理: &%s\n", ft.String())
+			_ = generateProxyFromTypeWithDepth(reflect.PointerTo(ft), &opt)
+			continue
+		}
+	}
+
 	// 类文件（即便无方法也生成空类）
 	classFile := filepath.Join(outDir, strings.ToLower(typeName)+"_class.go")
 	classBody := buildClassFileBody(srcPkgPath, pkgName, typeName, methods, structType, effectiveNamePrefix(pkgName, opt))
@@ -289,6 +359,10 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 func generateProxyFromType(typ reflect.Type, opt GenOptions) error {
 	if isPtrToStruct(typ) {
 		return generateClassFromType(typ, opt)
+	}
+	// 兼容值类型 struct：取其指针类型再生成
+	if typ.Kind() == reflect.Struct && typ.PkgPath() != "" && typ.Name() != "" {
+		return generateClassFromType(reflect.PointerTo(typ), opt)
 	}
 	if typ.Kind() == reflect.Interface && typ.PkgPath() != "" && typ.Name() != "" {
 		return generateInterfaceProxy(typ, opt)

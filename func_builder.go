@@ -75,9 +75,20 @@ func generateTopFunction(fn any, opt GenOptions) error {
 	// 为参数类型生成代理类（如果需要）
 	for i := 0; i < typ.NumIn(); i++ {
 		paramType := typ.In(i)
+		// 具名接口
 		if paramType.Kind() == reflect.Interface && paramType.PkgPath() != "" && paramType.Name() != "" {
-			// 为具名接口类型生成代理类
 			_ = generateInterfaceProxy(paramType, opt)
+			continue
+		}
+		// 指针 struct
+		if paramType.Kind() == reflect.Ptr && paramType.Elem().Kind() == reflect.Struct {
+			_ = generateClassFromType(paramType, opt)
+			continue
+		}
+		// 值类型 struct（具名）
+		if paramType.Kind() == reflect.Struct && paramType.PkgPath() != "" && paramType.Name() != "" {
+			_ = generateClassFromType(reflect.PointerTo(paramType), opt)
+			continue
 		}
 	}
 
@@ -201,7 +212,7 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 	fmt.Fprintf(b, "func (h *%sFunction) Call(ctx data.Context) (data.GetValue, data.Control) {\n\n", typeName)
 	// 参数提取
 	for i := 0; i < numIn; i++ {
-		fmt.Fprintf(b, "\ta%d, ok := ctx.GetIndexValue(%d)\n\tif !ok { return nil, data.NewErrorThrow(nil, errors.New(\"缺少参数, index: %d\")) }\n\n", i, i, i)
+		fmt.Fprintf(b, "\ta%d, ok := ctx.GetIndexValue(%d)\n\tif !ok { return nil, data.NewErrorThrow(nil, errors.New(\"%s 缺少参数, index: %d\")) }\n\n", i, i, funcName, i)
 	}
 	// 参数预处理：按类型严格处理
 	for i := 0; i < numIn; i++ {
@@ -239,9 +250,10 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 			fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, ifaceStr)
 			switchHeader := "\tswitch v := a%[1]d.(type) {\n"
 			fmt.Fprintf(b, switchHeader, i)
-			fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { if src := p.GetSource(); src != nil { arg%[1]d = src.(%s) } } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\")) }\n", i, ifaceStr, i)
+			fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { if src := p.GetSource(); src != nil { arg%[1]d = src.(%s) } } else { return nil, data.NewErrorThrow(nil, errors.New(\"%s 参数类型不支持, index: %d\")) }\n", i, ifaceStr, funcName, i)
+			fmt.Fprintf(b, "\tcase *data.ProxyValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { if src := p.GetSource(); src != nil { arg%[1]d = src.(%s) } } else { return nil, data.NewErrorThrow(nil, errors.New(\"%s 参数类型不支持, index: %d\")) }\n", i, ifaceStr, funcName, i)
 			fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\tif v.Value != nil { arg%[1]d = v.Value.(%s) }\n", i, ifaceStr)
-			fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\"))\n\t}\n", i)
+			fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"%s 参数类型不支持, index: %d\"))\n\t}\n", funcName, i)
 			continue
 		}
 		// 其它常见类型
@@ -261,7 +273,6 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 			fmt.Fprintf(b, "\targ%d, err := a%d.(*data.BoolValue).AsBool()\n\tif err != nil { return nil, data.NewErrorThrow(nil, err) }\n", i, i)
 		case reflect.Slice:
 			// 注意：对于可变参数（variadic parameters），可能需要使用 NewParametersReference 来引用参数
-			// 当前生成的是 NewParameter，如果遇到问题，请考虑修改为 NewParametersReference
 			fmt.Fprintf(b, "\targ%d := *a%d.(*data.ArrayValue)\n", i, i)
 		default:
 			// 具名 struct/具名基础类型：支持 ClassValue/AnyValue 双路径（通过 GetSource 接口）
@@ -275,14 +286,18 @@ func buildTopFunctionFileBodyWithNamesAndPC(srcPkgPath, pkgName, funcName, fullN
 				}
 				fmt.Fprintf(b, "\tvar arg%[1]d %s\n", i, typeStr)
 				fmt.Fprintf(b, "\tswitch v := a%[1]d.(type) {\n", i)
-				fmt.Fprintf(b, "\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { arg%[1]d = p.GetSource().(%s) } else { return nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\")) }\n", i, typeStr, i)
+				// 构建复杂的类型断言逻辑
+				b.WriteString(fmt.Sprintf("\tcase *data.ClassValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { if src := p.GetSource(); src != nil { if ptr, ok := src.(*%s); ok { arg%d = *ptr } else { arg%d = src.(%s) } } } else { return nil, data.NewErrorThrow(nil, errors.New(\"%s 参数类型不支持, index: %d\")) }\n", typeStr, i, i, typeStr, funcName, i))
+				b.WriteString(fmt.Sprintf("\tcase *data.ProxyValue:\n\t\tif p, ok := v.Class.(interface{ GetSource() any }); ok { if src := p.GetSource(); src != nil { if ptr, ok := src.(*%s); ok { arg%d = *ptr } else { arg%d = src.(%s) } } } else { return nil, data.NewErrorThrow(nil, errors.New(\"%s 参数类型不支持, index: %d\")) }\n", typeStr, i, i, typeStr, funcName, i))
 				fmt.Fprintf(b, "\tcase *data.AnyValue:\n\t\targ%[1]d = v.Value.(%s)\n", i, typeStr)
-				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"参数类型不支持, index: %d\"))\n\t}\n", i)
+				fmt.Fprintf(b, "\tdefault:\n\t\treturn nil, data.NewErrorThrow(nil, errors.New(\"%s 参数类型不支持, index: %d\"))\n\t}\n", funcName, i)
 			} else {
 				fmt.Fprintf(b, "\targ%d := a%d.(*data.AnyValue).Value\n", i, i)
 			}
 		}
 	}
+	b.WriteString("\n")
+
 	// 调用并接收返回值
 	if numOut > 0 {
 		// 构造左值列表
