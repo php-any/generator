@@ -90,6 +90,35 @@ func (fe *FileEmitterImpl) EmitLoadFile(pkgName string, functions []string, clas
 	return nil
 }
 
+// EmitClassFile 输出类文件，自动管理包与 imports
+func (fe *FileEmitterImpl) EmitClassFile(pkgName, fileName string, className string, fields []interface{}, methods []interface{}, header string, body string) error {
+	if pkgName == "" || fileName == "" {
+		return fmt.Errorf("包名或文件名不能为空")
+	}
+
+	// 创建包目录
+	pkgDir := filepath.Join(fe.outputRoot, pkgName)
+	if err := fe.CreateDirectory(pkgDir); err != nil {
+		return fmt.Errorf("创建包目录失败: %v", err)
+	}
+
+	// 生成文件头（已由调用方提供，或使用 codeManager 生成）
+	full := header
+	if full != "" {
+		full += "\n\n"
+	}
+	full += body
+
+	// 写入文件
+	filePath := filepath.Join(pkgDir, fileName)
+	if err := os.WriteFile(filePath, []byte(full), 0644); err != nil {
+		return fmt.Errorf("写入文件失败: %v", err)
+	}
+
+	fe.registerFile(pkgName, fileName)
+	return nil
+}
+
 // CreateDirectory 创建目录
 func (fe *FileEmitterImpl) CreateDirectory(path string) error {
 	return os.MkdirAll(path, 0755)
@@ -104,6 +133,11 @@ func (fe *FileEmitterImpl) FileExists(path string) bool {
 // GetOutputRoot 获取输出根目录
 func (fe *FileEmitterImpl) GetOutputRoot() string {
 	return fe.outputRoot
+}
+
+// GetCodeManager 获取内部的代码管理器
+func (fe *FileEmitterImpl) GetCodeManager() *CodeManager {
+	return fe.codeManager
 }
 
 // GetPackageFiles 获取包的所有文件

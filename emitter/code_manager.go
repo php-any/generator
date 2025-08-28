@@ -2,6 +2,7 @@ package emitter
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -129,6 +130,170 @@ func (cm *CodeManager) GenerateMethodCode(pkgName, className, methodName string,
 	return code
 }
 
+// BuildClassBodies 生成类模板的函数体片段
+func (cm *CodeManager) BuildClassBodies(pkgName, className string, fields []core.FieldInfo) map[string]string {
+	// 必要导入
+	cm.AddImport(pkgName, cm.mapPackagePath("data"))
+	cm.AddImport(pkgName, cm.mapPackagePath("node"))
+
+	bodies := map[string]string{}
+	bodies["BodyNewClass"] = fmt.Sprintf("return &%sClass{}", className)
+	bodies["BodyNewClassFrom"] = fmt.Sprintf("return &%sClass{source: source}", className)
+	bodies["BodyGetName"] = fmt.Sprintf("return \"%s\\\\%s\"", pkgName, className)
+	bodies["BodyGetExtend"] = "return nil"
+	bodies["BodyGetImplements"] = "return nil"
+	bodies["BodyAsString"] = fmt.Sprintf("return \"%s{}\"", className)
+	bodies["BodyGetSource"] = "return s.source"
+	// 默认字段逻辑（导出字段）
+	if len(fields) > 0 {
+		var sbGet strings.Builder
+		sbGet.WriteString("if s.source == nil { return nil, false }\n")
+		sbGet.WriteString("src := s.source\n")
+		sbGet.WriteString("switch name {\n")
+		var sbProps strings.Builder
+		sbProps.WriteString("props := make(map[string]data.Property)\n")
+		var sbSet strings.Builder
+		sbSet.WriteString("if s.source == nil { return }\n")
+		sbSet.WriteString("src := s.source\n")
+		sbSet.WriteString("switch name {\n")
+		for _, f := range fields {
+			if !f.IsExported {
+				continue
+			}
+			fname := f.Name
+			// GetProperty cases
+			sbGet.WriteString("case \"")
+			sbGet.WriteString(fname)
+			sbGet.WriteString("\":\n")
+			kind := "other"
+			if f.Type != nil && f.Type.Type != nil {
+				switch f.Type.Type.Kind() {
+				case reflect.String:
+					kind = "string"
+				case reflect.Bool:
+					kind = "bool"
+				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+					reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+					kind = "int"
+				case reflect.Float32, reflect.Float64:
+					kind = "float"
+				default:
+					kind = "other"
+				}
+			}
+			if kind == "string" {
+				sbGet.WriteString("\treturn node.NewProperty(nil, \"")
+				sbGet.WriteString(fname)
+				sbGet.WriteString("\", \"public\", true, data.NewStringValue(src.")
+				sbGet.WriteString(fname)
+				sbGet.WriteString(")), true\n")
+			} else if kind == "bool" {
+				sbGet.WriteString("\treturn node.NewProperty(nil, \"")
+				sbGet.WriteString(fname)
+				sbGet.WriteString("\", \"public\", true, data.NewBoolValue(src.")
+				sbGet.WriteString(fname)
+				sbGet.WriteString(")), true\n")
+			} else if kind == "int" {
+				sbGet.WriteString("\treturn node.NewProperty(nil, \"")
+				sbGet.WriteString(fname)
+				sbGet.WriteString("\", \"public\", true, data.NewIntValue(int(src.")
+				sbGet.WriteString(fname)
+				sbGet.WriteString("))), true\n")
+			} else {
+				sbGet.WriteString("\treturn node.NewProperty(nil, \"")
+				sbGet.WriteString(fname)
+				sbGet.WriteString("\", \"public\", true, data.NewAnyValue(src.")
+				sbGet.WriteString(fname)
+				sbGet.WriteString(")), true\n")
+			}
+
+			// GetProperties entries
+			sbProps.WriteString("props[\"")
+			sbProps.WriteString(fname)
+			sbProps.WriteString("\"] = node.NewProperty(nil, \"")
+			sbProps.WriteString(fname)
+			sbProps.WriteString("\", \"public\", true, data.NewAnyValue(nil))\n")
+
+			// SetProperty cases
+			sbSet.WriteString("case \"")
+			sbSet.WriteString(fname)
+			sbSet.WriteString("\":\n")
+			if f.Type != nil && f.Type.Type != nil && f.Type.Type.Kind() == reflect.String {
+				sbSet.WriteString("\tif sv, ok := value.(*data.StringValue); ok { src.")
+				sbSet.WriteString(fname)
+				sbSet.WriteString(" = string(sv.AsString()) }\n")
+			} else if kind == "bool" {
+				sbSet.WriteString("\tif bv, ok := value.(*data.BoolValue); ok { if x, err := bv.AsBool(); err == nil { src.")
+				sbSet.WriteString(fname)
+				sbSet.WriteString(" = bool(x) } }\n")
+			} else if kind == "int" {
+				sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+				sbSet.WriteString(fname)
+				sbSet.WriteString(" = int(x) } }\n")
+			} else {
+				sbSet.WriteString("\tif av, ok := value.(*data.AnyValue); ok { src.")
+				sbSet.WriteString(fname)
+				sbSet.WriteString(" = av.Value }\n")
+			}
+		}
+		sbGet.WriteString("}\nreturn nil, false")
+		bodies["BodyGetProperty"] = sbGet.String()
+		sbProps.WriteString("return props")
+		bodies["BodyGetProperties"] = sbProps.String()
+		sbSet.WriteString("}")
+		bodies["BodySetProperty"] = sbSet.String()
+	} else {
+		bodies["BodyGetProperty"] = "return nil, false"
+		bodies["BodyGetProperties"] = "return make(map[string]data.Property)"
+		bodies["BodySetProperty"] = "return"
+	}
+	bodies["BodyGetValue"] = "return data.NewClassValue(s, ctx.CreateBaseContext()), nil"
+	bodies["BodyGetMethod"] = "return nil, false"
+	bodies["BodyGetMethods"] = "return nil"
+	bodies["BodyGetConstruct"] = "return nil"
+
+	// 不再保留硬编码的类型特例，统一由字段与配置驱动
+	return bodies
+}
+
+// BuildClassSignature 填充类模板签名相关占位
+func (cm *CodeManager) BuildClassSignature(data *core.TemplateData) {
+	// 默认 any（如需具体类型，可通过分析器提供并在此处注入，避免硬编码）
+	data.NewClassFromParam = "source any"
+	data.SourceType = "any"
+}
+
+// BuildFunctionBodies 生成函数模板的函数体片段
+func (cm *CodeManager) BuildFunctionBodies(pkgName, functionName string) map[string]string {
+	cm.AddImport(pkgName, cm.mapPackagePath("data"))
+	cm.AddImport(pkgName, cm.mapPackagePath("node"))
+	bodies := map[string]string{}
+	bodies["BodyNewFunction"] = fmt.Sprintf("return &%sFunction{}", functionName)
+	bodies["BodyGetFunctionName"] = fmt.Sprintf("return \"%s\"", functionName)
+	bodies["BodyFunctionCall"] = fmt.Sprintf("return data.NewStringValue(\"%s 调用完成\"), nil", functionName)
+	bodies["BodyFuncGetModifier"] = "return data.ModifierPublic"
+	bodies["BodyFuncGetIsStatic"] = "return true"
+	bodies["BodyFuncGetParams"] = "return []data.GetValue{}"
+	bodies["BodyFuncGetVariables"] = "return []data.Variable{}"
+	bodies["BodyFuncGetReturnType"] = "return data.NewBaseType(\"mixed\")"
+	return bodies
+}
+
+// BuildMethodBodies 生成方法模板的函数体片段
+func (cm *CodeManager) BuildMethodBodies(pkgName, className, methodName string) map[string]string {
+	cm.AddImport(pkgName, cm.mapPackagePath("data"))
+	bodies := map[string]string{}
+	bodies["BodyNewMethod"] = "return &" + methodName + "Method{ source: source }"
+	bodies["BodyGetMethodName"] = fmt.Sprintf("return \"%s\"", methodName)
+	bodies["BodyMethodCall"] = fmt.Sprintf("return data.NewStringValue(\"%s 调用完成\"), nil", methodName)
+	bodies["BodyMethodGetModifier"] = "return data.ModifierPublic"
+	bodies["BodyMethodGetIsStatic"] = "return false"
+	bodies["BodyMethodGetParams"] = "return []data.GetValue{}"
+	bodies["BodyMethodGetVariables"] = "return []data.Variable{}"
+	bodies["BodyMethodGetReturnType"] = "return data.NewBaseType(\"void\")"
+	return bodies
+}
+
 // 生成别名
 func (cm *CodeManager) generateAlias(importPath string) string {
 	// 从路径中提取包名
@@ -209,13 +374,12 @@ func (cm *CodeManager) addTypeImports(pkgName, typeName string) {
 
 // 检查是否是标准库
 func (cm *CodeManager) isStandardLibrary(pkgName string) bool {
-	standardLibs := []string{
-		"fmt", "os", "io", "bufio", "bytes", "strings", "strconv",
-		"time", "math", "sort", "reflect", "encoding", "crypto",
-		"context", "errors", "log", "path", "filepath", "net", "http",
+	libs := []string{"fmt", "os", "io", "bufio", "bytes", "strings", "strconv", "time", "math", "sort", "reflect", "encoding", "crypto", "context", "errors", "log", "path", "filepath", "net", "http"}
+	if cm.config != nil && len(cm.config.StandardLibs) > 0 {
+		libs = cm.config.StandardLibs
 	}
 
-	for _, lib := range standardLibs {
+	for _, lib := range libs {
 		if pkgName == lib {
 			return true
 		}
@@ -236,8 +400,12 @@ func (cm *CodeManager) mapPackagePath(pkgName string) string {
 		}
 	}
 
-	// 如果没有找到映射，返回默认的包路径
-	return fmt.Sprintf("github.com/php-any/origami/%s", pkgName)
+	// 如果没有找到映射，使用配置的默认前缀
+	prefix := "github.com/php-any/origami"
+	if cm.config != nil && cm.config.DefaultImportPrefix != "" {
+		prefix = cm.config.DefaultImportPrefix
+	}
+	return fmt.Sprintf("%s/%s", prefix, pkgName)
 }
 
 // 生成函数体
@@ -283,7 +451,7 @@ func New%sClass() *%sClass {
 func (c *%sClass) GetName() string {
 	return "%s"
 }`,
-		className, className, className, className, className, className, className)
+		className, className, className, className, className, className, className, className)
 }
 
 // 生成方法体
@@ -309,5 +477,5 @@ func (m *%sMethod) Call(ctx data.Context, args []data.Value) (data.GetValue, dat
 	// TODO: 实现方法调用逻辑
 	return data.NewStringValue("method result"), nil
 }`,
-		methodName, methodName, methodName, methodName, methodName, methodName, methodName, methodName)
+		methodName, methodName, methodName, methodName, methodName, methodName, methodName, methodName, methodName)
 }

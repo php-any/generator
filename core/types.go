@@ -98,6 +98,11 @@ type GeneratorConfig struct {
 
 	// 高级配置
 	Advanced AdvancedConfig
+
+	// 可配置的标准库列表
+	StandardLibs []string
+	// 默认导入前缀（用于包映射回退）
+	DefaultImportPrefix string
 }
 
 // BlacklistConfig 黑名单配置
@@ -328,6 +333,8 @@ func NewDefaultConfig() *GeneratorConfig {
 				MaxSize:   100,
 			},
 		},
+		StandardLibs:        []string{"fmt", "os", "io", "bufio", "bytes", "strings", "strconv", "time", "math", "sort", "reflect", "encoding", "crypto", "context", "errors", "log", "path", "filepath", "net", "http"},
+		DefaultImportPrefix: "github.com/php-any/origami",
 	}
 
 	// 设置默认包映射规则

@@ -92,6 +92,46 @@ type TemplateData struct {
 	// 新增：配置相关数据
 	Config        interface{}
 	PackageConfig *PackageConfig
+	// New*From 参数签名
+	NewClassFromParam string
+	// 代理源类型
+	SourceType string
+	// 由代码管理器注入的函数体片段
+	BodyNewClass      string
+	BodyNewClassFrom  string
+	BodyGetName       string
+	BodyGetExtend     string
+	BodyGetImplements string
+	BodyAsString      string
+	BodyGetSource     string
+	BodyGetProperty   string
+	BodyGetProperties string
+	BodySetProperty   string
+	BodyGetValue      string
+	BodyGetMethod     string
+	BodyGetMethods    string
+	BodyGetConstruct  string
+
+	BodyNewFunction     string
+	BodyGetFunctionName string
+	BodyFunctionCall    string
+	// 函数接口补充占位
+	BodyFuncGetModifier   string
+	BodyFuncGetIsStatic   string
+	BodyFuncGetParams     string
+	BodyFuncGetVariables  string
+	BodyFuncGetReturnType string
+
+	BodyNewMethod     string
+	BodyGetMethodName string
+	BodyMethodCall    string
+
+	// 方法接口补充占位
+	BodyMethodGetModifier   string
+	BodyMethodGetIsStatic   string
+	BodyMethodGetParams     string
+	BodyMethodGetVariables  string
+	BodyMethodGetReturnType string
 }
 
 // PackageConfig 包配置

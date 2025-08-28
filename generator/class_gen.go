@@ -2,6 +2,7 @@ package generator
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/php-any/generator/core"
@@ -80,9 +81,10 @@ func (cg *ClassGenerator) GenerateMethodsFiles(cls *core.TypeInfo, packageName s
 func (cg *ClassGenerator) convertFields(fields []core.FieldInfo) []core.FieldTemplateData {
 	var out []core.FieldTemplateData
 	for _, f := range fields {
+		typeStr := cg.qualifyTypeName(f.Type)
 		out = append(out, core.FieldTemplateData{
 			Name:       f.Name,
-			Type:       f.Type.TypeName,
+			Type:       typeStr,
 			IsExported: f.IsExported,
 			Tag:        string(f.Tag),
 		})
@@ -108,9 +110,10 @@ func (cg *ClassGenerator) convertMethods(cls *core.TypeInfo, methods []core.Meth
 func (cg *ClassGenerator) convertParams(params []core.ParameterInfo) []core.ParameterTemplateData {
 	var out []core.ParameterTemplateData
 	for i, p := range params {
+		typeStr := cg.qualifyTypeName(p.Type)
 		out = append(out, core.ParameterTemplateData{
 			Name:  p.Name,
-			Type:  p.Type.TypeName,
+			Type:  typeStr,
 			Index: i,
 		})
 	}
@@ -120,12 +123,42 @@ func (cg *ClassGenerator) convertParams(params []core.ParameterInfo) []core.Para
 func (cg *ClassGenerator) convertReturns(returns []core.TypeInfo) []core.ReturnTemplateData {
 	var out []core.ReturnTemplateData
 	for i := range returns {
+		typeStr := cg.qualifyTypeName(&returns[i])
 		out = append(out, core.ReturnTemplateData{
-			Type:  returns[i].TypeName,
+			Type:  typeStr,
 			Index: i,
 		})
 	}
 	return out
+}
+
+// qualifyTypeName 返回用于模板判断/生成的全限定类型名
+func (cg *ClassGenerator) qualifyTypeName(t *core.TypeInfo) string {
+	if t == nil || t.Type == nil {
+		return ""
+	}
+	// 处理切片/数组/映射/指针，递归构造元素类型字符串
+	kind := t.Type.Kind()
+	switch kind {
+	case reflect.Slice:
+		elem := cg.qualifyTypeName(t.GetElementType())
+		return "[]" + elem
+	case reflect.Array:
+		elem := cg.qualifyTypeName(t.GetElementType())
+		return "[]" + elem
+	case reflect.Map:
+		// 简化：键/值类型都作为 AnyValue 处理，模板默认走 AnyValue 分支
+		return t.String()
+	case reflect.Ptr:
+		elem := cg.qualifyTypeName(t.GetElementType())
+		return "*" + elem
+	}
+
+	// 基本类型或具名类型
+	if t.PackageName != "" {
+		return t.PackageName + "." + t.TypeName
+	}
+	return t.TypeName
 }
 
 func (cg *ClassGenerator) buildMethodFileName(pkg, className, methodName string) string {

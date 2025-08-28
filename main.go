@@ -44,10 +44,21 @@ func main() {
 	}
 
 	// 3. 创建生成器上下文
+	cfg := configManager.GetConfig()
+	outRoot := "origami"
+	namePrefix := "origami"
+	if cfg != nil {
+		if cfg.OutputRoot != "" {
+			outRoot = cfg.OutputRoot
+		}
+		if cfg.GlobalPrefix != "" {
+			namePrefix = cfg.GlobalPrefix
+		}
+	}
 	ctx := core.NewGeneratorContext(&core.GenOptions{
 		MaxDepth:   100,
-		OutputRoot: "origami",
-		NamePrefix: "origami",
+		OutputRoot: outRoot,
+		NamePrefix: namePrefix,
 	})
 	ctx.SetConfigManager(configManager)
 
@@ -63,7 +74,7 @@ func main() {
 	var templateGenerator core.TemplateGenerator = templateEngine
 
 	// 6. 创建文件输出器（使用真正的文件输出器）
-	fileEmitter := emitter.NewFileEmitter("origami")
+	fileEmitter := emitter.NewFileEmitter(outRoot)
 
 	// 7. 示例：分析 http.ServeMux 类型
 	fmt.Println("\n分析 http.ServeMux 类型（包含依赖类型）...")
@@ -110,9 +121,10 @@ func main() {
 
 	// 10. 生成加载文件
 	fmt.Println("\n生成加载文件...")
-	err = fileEmitter.EmitLoadFile("example", []string{}, []string{"ServeMux"})
-	if err != nil {
-		log.Fatalf("生成加载文件失败: %v", err)
+	// 使用上下文内实际包集合生成 load 文件，避免硬编码 example
+	packages := fileEmitter.GetAllPackages()
+	for _, pkg := range packages {
+		_ = fileEmitter.EmitLoadFile(pkg, []string{}, []string{"ServeMux"})
 	}
 
 	fmt.Println("文件输出成功！")
@@ -127,7 +139,7 @@ func main() {
 
 	// 12. 显示生成的文件
 	fmt.Println("\n生成的文件:")
-	packages := fileEmitter.GetAllPackages()
+	packages = fileEmitter.GetAllPackages()
 	for _, pkg := range packages {
 		files := fileEmitter.GetPackageFiles(pkg)
 		fmt.Printf("- 包 %s:\n", pkg)

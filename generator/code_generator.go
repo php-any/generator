@@ -6,6 +6,7 @@ import (
 
 	"github.com/php-any/generator/analyzer"
 	"github.com/php-any/generator/core"
+	emitterPkg "github.com/php-any/generator/emitter"
 )
 
 // CodeGeneratorImpl 代码生成器实现
@@ -90,8 +91,22 @@ func (cg *CodeGeneratorImpl) GenerateFunction(ctx *core.GeneratorContext, fn *co
 		})
 	}
 
-	// 生成代码
-	return cg.templates.GenerateFunction(templateData)
+	// 注入函数体并拼接文件头
+	cm := emitterPkg.NewCodeManager(ctx.GetConfigManager().GetConfig())
+	bodies := cm.BuildFunctionBodies(templateData.PackageName, fn.Name)
+	templateData.BodyNewFunction = bodies["BodyNewFunction"]
+	templateData.BodyGetFunctionName = bodies["BodyGetFunctionName"]
+	templateData.BodyFunctionCall = bodies["BodyFunctionCall"]
+
+	body, err := cg.templates.GenerateFunction(templateData)
+	if err != nil {
+		return "", err
+	}
+	header := cm.GenerateFileHeader(templateData.PackageName)
+	if header != "" {
+		return header + "\n\n" + body, nil
+	}
+	return body, nil
 }
 
 // GenerateClass 生成类代码
@@ -103,7 +118,19 @@ func (cg *CodeGeneratorImpl) GenerateClass(ctx *core.GeneratorContext, class *co
 	// 获取包名（从类信息或配置中获取）
 	pkgName := cg.getPackageName(class)
 	if pkgName == "" {
-		pkgName = "example" // 默认包名
+		// 从配置推导，避免硬编码
+		if ctx.GetConfigManager() != nil && ctx.GetConfigManager().GetConfig() != nil {
+			cfg := ctx.GetConfigManager().GetConfig()
+			pkgName = cfg.GetPackagePrefix(class.PackagePath)
+			if pkgName == "" {
+				pkgName = cfg.GlobalPrefix
+			}
+			if pkgName == "" {
+				pkgName = "generated"
+			}
+		} else {
+			pkgName = "generated"
+		}
 	}
 
 	// 准备模板数据
@@ -170,8 +197,52 @@ func (cg *CodeGeneratorImpl) GenerateClass(ctx *core.GeneratorContext, class *co
 		templateData.Methods = append(templateData.Methods, methodTemplateData)
 	}
 
-	// 生成代码
-	return cg.templates.GenerateClass(templateData)
+	// 注入类函数体片段并拼接文件头
+	cm := emitterPkg.NewCodeManager(ctx.GetConfigManager().GetConfig())
+	bodies := cm.BuildClassBodies(pkgName, class.TypeName, class.Fields)
+	templateData.BodyNewClass = bodies["BodyNewClass"]
+	templateData.BodyNewClassFrom = bodies["BodyNewClassFrom"]
+	templateData.BodyGetName = bodies["BodyGetName"]
+	templateData.BodyGetExtend = bodies["BodyGetExtend"]
+	templateData.BodyGetImplements = bodies["BodyGetImplements"]
+	templateData.BodyAsString = bodies["BodyAsString"]
+	templateData.BodyGetSource = bodies["BodyGetSource"]
+	templateData.BodyGetProperty = bodies["BodyGetProperty"]
+	templateData.BodyGetProperties = bodies["BodyGetProperties"]
+	templateData.BodySetProperty = bodies["BodySetProperty"]
+	templateData.BodyGetValue = bodies["BodyGetValue"]
+	templateData.BodyGetMethod = bodies["BodyGetMethod"]
+	templateData.BodyGetMethods = bodies["BodyGetMethods"]
+	templateData.BodyGetConstruct = bodies["BodyGetConstruct"]
+	// 精确注入 SourceType 与 NewClassFromParam（避免 any）
+	if class.PackagePath != "" && class.TypeName != "" {
+		base := class.PackageName
+		if base == "" {
+			parts := strings.Split(class.PackagePath, "/")
+			base = parts[len(parts)-1]
+		}
+		alias := base + "src"
+		cm.AddImportWithAlias(pkgName, class.PackagePath, alias)
+		srcType := alias + "." + class.TypeName
+		if class.IsStruct {
+			srcType = "*" + srcType
+		}
+		templateData.SourceType = srcType
+		templateData.NewClassFromParam = "source " + srcType
+	} else {
+		templateData.SourceType = "any"
+		templateData.NewClassFromParam = "source any"
+	}
+
+	body, err := cg.templates.GenerateClass(templateData)
+	if err != nil {
+		return "", err
+	}
+	header := cm.GenerateFileHeader(pkgName)
+	if header != "" {
+		return header + "\n\n" + body, nil
+	}
+	return body, nil
 }
 
 // GenerateClassWithMethods 生成类代码和所有方法文件
@@ -242,7 +313,18 @@ func (cg *CodeGeneratorImpl) generateSingleClassWithMethods(ctx *core.GeneratorC
 	// 获取包名
 	pkgName := cg.getPackageName(class)
 	if pkgName == "" {
-		pkgName = "example" // 默认包名
+		if ctx.GetConfigManager() != nil && ctx.GetConfigManager().GetConfig() != nil {
+			cfg := ctx.GetConfigManager().GetConfig()
+			pkgName = cfg.GetPackagePrefix(class.PackagePath)
+			if pkgName == "" {
+				pkgName = cfg.GlobalPrefix
+			}
+			if pkgName == "" {
+				pkgName = "generated"
+			}
+		} else {
+			pkgName = "generated"
+		}
 	}
 
 	// 检查是否已经生成过（避免重复生成）
@@ -257,7 +339,7 @@ func (cg *CodeGeneratorImpl) generateSingleClassWithMethods(ctx *core.GeneratorC
 	}
 
 	// 输出类文件（使用类型名确保唯一性）
-	classFileName := fmt.Sprintf("%s_%s_class.go", pkgName, class.TypeName)
+	classFileName := fmt.Sprintf("%s_class.go", strings.ToLower(class.TypeName))
 	if err := emitter.EmitFile(pkgName, classFileName, classCode); err != nil {
 		return core.NewGeneratorError(core.ErrCodeFileOperation,
 			fmt.Sprintf("failed to emit class file: %v", err), nil)
@@ -324,13 +406,23 @@ func (cg *CodeGeneratorImpl) generateSingleClassWithMethods(ctx *core.GeneratorC
 			methodTemplateData.Methods[0] = mt0
 		}
 
-		// 生成方法代码
-		methodCode, err := cg.templates.GenerateMethod(methodTemplateData)
+		// 注入方法体并拼接文件头
+		cm := emitterPkg.NewCodeManager(ctx.GetConfigManager().GetConfig())
+		mb := cm.BuildMethodBodies(pkgName, class.TypeName, method.Name)
+		methodTemplateData.BodyNewMethod = mb["BodyNewMethod"]
+		methodTemplateData.BodyGetMethodName = mb["BodyGetMethodName"]
+		methodTemplateData.BodyMethodCall = mb["BodyMethodCall"]
+		body, err := cg.templates.GenerateMethod(methodTemplateData)
 		if err != nil {
 			return core.NewGeneratorError(core.ErrCodeCodeGeneration,
 				fmt.Sprintf("failed to generate method code: %v", err), nil)
 		}
 
+		header := cm.GenerateFileHeader(pkgName)
+		methodCode := body
+		if header != "" {
+			methodCode = header + "\n\n" + body
+		}
 		// 输出方法文件
 		methodFileName := fmt.Sprintf("%s_%s_method.go", pkgName, method.Name)
 		if err := emitter.EmitFile(pkgName, methodFileName, methodCode); err != nil {
@@ -371,8 +463,11 @@ func (cg *CodeGeneratorImpl) getPackageName(class *core.TypeInfo) string {
 	if cg.context.GetConfigManager() != nil {
 		config := cg.context.GetConfigManager().GetConfig()
 		if config != nil {
-			// 这里可以根据配置规则确定包名
-			return "example"
+			// 使用配置的全局前缀作为回退
+			if config.GlobalPrefix != "" {
+				return config.GlobalPrefix
+			}
+			return "generated"
 		}
 	}
 
