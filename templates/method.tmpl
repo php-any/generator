@@ -2,10 +2,10 @@
 
 // {{$m.Name}}Method 类型骨架（函数体由外部生成注入）
 type {{$m.Name}}Method struct {
-	source {{.ClassName}}
+	source {{.SourceType}}
 }
 
-func New{{$m.Name}}Method(source {{.ClassName}}) *{{$m.Name}}Method { {{ .BodyNewMethod }} }
+func New{{$m.Name}}Method(source {{.SourceType}}) *{{$m.Name}}Method { {{ .BodyNewMethod }} }
 func (m *{{$m.Name}}Method) GetName() string { {{ .BodyGetMethodName }} }
 func (m *{{$m.Name}}Method) Call(ctx data.Context, args []data.Value) (data.GetValue, data.Control) { {{ .BodyMethodCall }} }
 func (m *{{$m.Name}}Method) GetModifier() data.Modifier { {{ .BodyMethodGetModifier }} }

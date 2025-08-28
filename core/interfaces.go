@@ -52,6 +52,7 @@ type FileEmitter interface {
 	EmitLoadFile(pkgName string, functions []string, classes []string) error
 	CreateDirectory(path string) error
 	FileExists(path string) bool
+	RegisterClass(pkgName, className string)
 }
 
 // ConversionStrategy 转换策略接口

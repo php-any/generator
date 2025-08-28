@@ -225,15 +225,79 @@ func (cm *CodeManager) BuildClassBodies(pkgName, className string, fields []core
 			} else if kind == "bool" {
 				sbSet.WriteString("\tif bv, ok := value.(*data.BoolValue); ok { if x, err := bv.AsBool(); err == nil { src.")
 				sbSet.WriteString(fname)
-				sbSet.WriteString(" = bool(x) } }\n")
+				sbSet.WriteString(" = x } }\n")
 			} else if kind == "int" {
-				sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
-				sbSet.WriteString(fname)
-				sbSet.WriteString(" = int(x) } }\n")
+				// 具名整型优先按具名类型转换
+				if f.Type != nil && f.Type.Type != nil && f.Type.Type.Name() != "" && f.Type.Type.PkgPath() != "" {
+					targetType := fmt.Sprintf("%ssrc.%s", f.Type.PackageName, f.Type.TypeName)
+					sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+					sbSet.WriteString(fname)
+					sbSet.WriteString(" = ")
+					sbSet.WriteString(targetType)
+					sbSet.WriteString("(x) } }\n")
+				} else {
+					// 基本整型按具体种类转换
+					switch f.Type.Type.Kind() {
+					case reflect.Int:
+						sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+						sbSet.WriteString(fname)
+						sbSet.WriteString(" = int(x) } }\n")
+					case reflect.Int8:
+						sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+						sbSet.WriteString(fname)
+						sbSet.WriteString(" = int8(x) } }\n")
+					case reflect.Int16:
+						sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+						sbSet.WriteString(fname)
+						sbSet.WriteString(" = int16(x) } }\n")
+					case reflect.Int32:
+						sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+						sbSet.WriteString(fname)
+						sbSet.WriteString(" = int32(x) } }\n")
+					case reflect.Int64:
+						sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+						sbSet.WriteString(fname)
+						sbSet.WriteString(" = int64(x) } }\n")
+					case reflect.Uint:
+						sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+						sbSet.WriteString(fname)
+						sbSet.WriteString(" = uint(x) } }\n")
+					case reflect.Uint8:
+						sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+						sbSet.WriteString(fname)
+						sbSet.WriteString(" = uint8(x) } }\n")
+					case reflect.Uint16:
+						sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+						sbSet.WriteString(fname)
+						sbSet.WriteString(" = uint16(x) } }\n")
+					case reflect.Uint32:
+						sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+						sbSet.WriteString(fname)
+						sbSet.WriteString(" = uint32(x) } }\n")
+					case reflect.Uint64:
+						sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+						sbSet.WriteString(fname)
+						sbSet.WriteString(" = uint64(x) } }\n")
+					default:
+						// 兜底
+						sbSet.WriteString("\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { src.")
+						sbSet.WriteString(fname)
+						sbSet.WriteString(" = int(x) } }\n")
+					}
+				}
 			} else {
-				sbSet.WriteString("\tif av, ok := value.(*data.AnyValue); ok { src.")
-				sbSet.WriteString(fname)
-				sbSet.WriteString(" = av.Value }\n")
+				if f.Type != nil && f.Type.Type != nil {
+					typeExpr := cm.buildGoTypeExpr(pkgName, f.Type)
+					sbSet.WriteString("\tif av, ok := value.(*data.AnyValue); ok { if v, ok2 := av.Value.(")
+					sbSet.WriteString(typeExpr)
+					sbSet.WriteString("); ok2 { src.")
+					sbSet.WriteString(fname)
+					sbSet.WriteString(" = v } }\n")
+				} else {
+					sbSet.WriteString("\tif av, ok := value.(*data.AnyValue); ok { src.")
+					sbSet.WriteString(fname)
+					sbSet.WriteString(" = av.Value }\n")
+				}
 			}
 		}
 		sbGet.WriteString("}\nreturn nil, false")
@@ -254,6 +318,60 @@ func (cm *CodeManager) BuildClassBodies(pkgName, className string, fields []core
 
 	// 不再保留硬编码的类型特例，统一由字段与配置驱动
 	return bodies
+}
+
+// buildGoTypeExpr 根据 TypeInfo 构建用于断言的 Go 类型表达式，并自动添加必要 import
+func (cm *CodeManager) buildGoTypeExpr(pkgName string, t *core.TypeInfo) string {
+	if t == nil || t.Type == nil {
+		return "any"
+	}
+	// 基础类型与本地包直接返回反射字符串
+	// 对于外部包，使用 <pkgName>src.TypeName 形式，并根据配置映射路径
+	// 指针/切片/映射/数组等复合类型递归处理
+	switch t.Type.Kind() {
+	case reflect.Ptr:
+		elem := cm.buildGoTypeExpr(pkgName, t.GetElementType())
+		return "*" + elem
+	case reflect.Slice:
+		elem := cm.buildGoTypeExpr(pkgName, t.GetElementType())
+		return "[]" + elem
+	case reflect.Array:
+		// 无法得知定长，回退为切片表达式以用于断言语义
+		elem := cm.buildGoTypeExpr(pkgName, t.GetElementType())
+		return "[]" + elem
+	case reflect.Map:
+		keyExpr := cm.buildGoTypeExpr(pkgName, t.GetKeyType())
+		valExpr := cm.buildGoTypeExpr(pkgName, t.GetElementType())
+		return "map[" + keyExpr + "]" + valExpr
+	default:
+		// 具名类型
+		if t.Type.PkgPath() != "" {
+			base := core.NewTypeInfo(t.Type).PackageName
+			// 基于配置映射：优先 base（无别名），其次 base+"src"（有别名）
+			if cm.config != nil && cm.config.PackageMappings != nil {
+				if _, ok := cm.config.PackageMappings[base]; ok {
+					// 无别名，直接按 base 使用配置路径
+					cm.AddImport(pkgName, cm.mapPackagePath(base))
+					return base + "." + t.TypeName
+				}
+				aliasKey := base + "src"
+				if _, ok := cm.config.PackageMappings[aliasKey]; ok {
+					cm.AddImportWithAlias(pkgName, cm.mapPackagePath(aliasKey), aliasKey)
+					return aliasKey + "." + t.TypeName
+				}
+			}
+			// 未配置映射：根据是否标准库决定
+			if cm.isStandardLibrary(base) {
+				cm.AddImport(pkgName, cm.mapPackagePath(base))
+				return base + "." + t.TypeName
+			}
+			alias := base + "src"
+			cm.AddImportWithAlias(pkgName, cm.mapPackagePath(alias), alias)
+			return alias + "." + t.TypeName
+		}
+		// 内建或无包名类型
+		return t.Type.String()
+	}
 }
 
 // BuildClassSignature 填充类模板签名相关占位
@@ -357,17 +475,30 @@ func (cm *CodeManager) addMethodImports(pkgName string, params []core.ParameterI
 
 // 根据类型添加imports
 func (cm *CodeManager) addTypeImports(pkgName, typeName string) {
-	// 检查是否是外部包类型
+	// 检查是否是外部包类型（形如 pkg.Type）
 	if strings.Contains(typeName, ".") {
 		parts := strings.Split(typeName, ".")
 		if len(parts) == 2 {
 			externalPkg := parts[0]
-			// 检查是否需要添加import
-			if !cm.isStandardLibrary(externalPkg) && !cm.isLocalPackage(externalPkg, pkgName) {
-				// 这里可以根据配置映射包路径
-				importPath := cm.mapPackagePath(externalPkg)
-				cm.AddImport(pkgName, importPath)
+			// 优先使用配置映射 base 键（无别名）
+			if cm.config != nil && cm.config.PackageMappings != nil {
+				if _, ok := cm.config.PackageMappings[externalPkg]; ok {
+					cm.AddImport(pkgName, cm.mapPackagePath(externalPkg))
+					return
+				}
+				aliasKey := externalPkg + "src"
+				if _, ok := cm.config.PackageMappings[aliasKey]; ok {
+					cm.AddImportWithAlias(pkgName, cm.mapPackagePath(aliasKey), aliasKey)
+					return
+				}
 			}
+			// 未配置映射：根据是否标准库决定
+			if cm.isStandardLibrary(externalPkg) {
+				cm.AddImport(pkgName, cm.mapPackagePath(externalPkg))
+				return
+			}
+			alias := externalPkg + "src"
+			cm.AddImportWithAlias(pkgName, cm.mapPackagePath(alias), alias)
 		}
 	}
 }
@@ -410,72 +541,18 @@ func (cm *CodeManager) mapPackagePath(pkgName string) string {
 
 // 生成函数体
 func (cm *CodeManager) generateFunctionBody(functionName string, params []core.ParameterInfo, returns []core.ReturnTemplateData) string {
-	// 这里可以根据需要生成更复杂的函数体
-	return fmt.Sprintf(`// %sFunction 函数代理
-type %sFunction struct {
-	node.Node
-}
-
-// New%sFunction 创建新的函数代理
-func New%sFunction() *%sFunction {
-	return &%sFunction{}
-}
-
-// GetName 获取函数名
-func (f *%sFunction) GetName() string {
-	return "%s"
-}
-
-// Call 调用函数
-func (f *%sFunction) Call(ctx data.Context, args []data.Value) (data.GetValue, data.Control) {
-	// TODO: 实现函数调用逻辑
-	return data.NewStringValue("function result"), nil
-}`,
-		functionName, functionName, functionName, functionName, functionName, functionName, functionName, functionName, functionName)
+	// 占位：未使用此生成路径
+	return "// function body not used by generator\n"
 }
 
 // 生成类体
 func (cm *CodeManager) generateClassBody(className string, fields []core.FieldInfo, methods []core.MethodInfo) string {
-	// 这里可以根据需要生成更复杂的类体
-	return fmt.Sprintf(`// %sClass 类代理
-type %sClass struct {
-	node.Node
-}
-
-// New%sClass 创建新的类代理
-func New%sClass() *%sClass {
-	return &%sClass{}
-}
-
-// GetName 获取类名
-func (c *%sClass) GetName() string {
-	return "%s"
-}`,
-		className, className, className, className, className, className, className, className)
+	// 占位：未使用此生成路径
+	return "// class body not used by generator\n"
 }
 
 // 生成方法体
 func (cm *CodeManager) generateMethodBody(className, methodName string, params []core.ParameterInfo, returns []core.ReturnTemplateData) string {
-	// 这里可以根据需要生成更复杂的方法体
-	return fmt.Sprintf(`// %sMethod 方法代理
-type %sMethod struct {
-	node.Node
-}
-
-// New%sMethod 创建新的方法代理
-func New%sMethod() *%sMethod {
-	return &%sMethod{}
-}
-
-// GetName 获取方法名
-func (m *%sMethod) GetName() string {
-	return "%s"
-}
-
-// Call 调用方法
-func (m *%sMethod) Call(ctx data.Context, args []data.Value) (data.GetValue, data.Control) {
-	// TODO: 实现方法调用逻辑
-	return data.NewStringValue("method result"), nil
-}`,
-		methodName, methodName, methodName, methodName, methodName, methodName, methodName, methodName, methodName)
+	// 占位：未使用此生成路径
+	return "// method body not used by generator\n"
 }

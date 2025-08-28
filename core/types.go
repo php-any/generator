@@ -333,7 +333,7 @@ func NewDefaultConfig() *GeneratorConfig {
 				MaxSize:   100,
 			},
 		},
-		StandardLibs:        []string{"fmt", "os", "io", "bufio", "bytes", "strings", "strconv", "time", "math", "sort", "reflect", "encoding", "crypto", "context", "errors", "log", "path", "filepath", "net", "http"},
+		StandardLibs:        []string{"fmt", "os", "io", "bufio", "bytes", "strings", "strconv", "time", "math", "sort", "reflect", "encoding", "crypto", "context", "errors", "log", "path", "filepath", "net", "http", "url", "multipart", "textproto", "tls", "x509"},
 		DefaultImportPrefix: "github.com/php-any/origami",
 	}
 
@@ -361,6 +361,16 @@ func (c *GeneratorConfig) setDefaultPackageMappings() {
 		"networkingsrc":  "github.com/php-any/origami/networking",
 		"securitysrc":    "github.com/php-any/origami/security",
 		"uilibsrc":       "github.com/php-any/origami/uilib",
+		// 标准库基础键映射（无别名）
+		"http":      "net/http",
+		"url":       "net/url",
+		"multipart": "mime/multipart",
+		"textproto": "net/textproto",
+		"tls":       "crypto/tls",
+		"x509":      "crypto/x509",
+		"io":        "io",
+		"time":      "time",
+		"context":   "context",
 	}
 
 	for source, target := range defaultMappings {

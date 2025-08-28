@@ -39,13 +39,45 @@ package_mappings:
   securitysrc: github.com/php-any/origami/security
   uilibsrc: github.com/php-any/origami/uilib
   customsrc: github.com/example/custom
-  # 标准库映射
+  # 标准库基础包名到完整路径
   http: net/http
+  url: net/url
+  multipart: mime/multipart
+  textproto: net/textproto
+  tls: crypto/tls
+  x509: crypto/x509
   context: context
   time: time
   fmt: fmt
   os: os
   io: io
+
+standard_libs:
+  - fmt
+  - os
+  - io
+  - bufio
+  - bytes
+  - strings
+  - strconv
+  - time
+  - math
+  - sort
+  - reflect
+  - encoding
+  - crypto
+  - context
+  - http
+  - url
+  - multipart
+  - textproto
+  - tls
+  - x509
+  - errors
+  - log
+  - path
+  - filepath
+  - net
 
 advanced:
   debug: false

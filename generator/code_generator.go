@@ -2,6 +2,7 @@ package generator
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/php-any/generator/analyzer"
@@ -344,6 +345,8 @@ func (cg *CodeGeneratorImpl) generateSingleClassWithMethods(ctx *core.GeneratorC
 		return core.NewGeneratorError(core.ErrCodeFileOperation,
 			fmt.Sprintf("failed to emit class file: %v", err), nil)
 	}
+	// 递归生成时登记代理类，便于 load.go 收集
+	emitter.RegisterClass(pkgName, class.TypeName)
 
 	// 生成方法文件
 	fmt.Printf("为类型 %s 生成 %d 个方法文件\n", class.TypeName, len(class.Methods))
@@ -409,9 +412,320 @@ func (cg *CodeGeneratorImpl) generateSingleClassWithMethods(ctx *core.GeneratorC
 		// 注入方法体并拼接文件头
 		cm := emitterPkg.NewCodeManager(ctx.GetConfigManager().GetConfig())
 		mb := cm.BuildMethodBodies(pkgName, class.TypeName, method.Name)
+		// 只在需要错误处理的方法中导入 errors
+		if len(method.Parameters) > 0 {
+			cm.AddImport(pkgName, "errors")
+		}
+		// 只在需要 node 包的方法中导入（GetParams/GetVariables/GetReturnType 实际使用 node 包）
+		needsNode := false
+		// 检查是否实际使用了 node 包的功能
+		if len(method.Parameters) > 0 {
+			needsNode = true // 有参数需要 NewParameter/NewVariable
+		}
+		if len(method.Returns) > 1 {
+			needsNode = true // 多返回值需要 ArrayValue
+		}
+		if needsNode {
+			cm.AddImport(pkgName, "github.com/php-any/origami/node")
+		}
+		// 为强制类型断言添加必要的包导入
+		if class.PackagePath == "net/http" {
+			cm.AddImportWithAlias(pkgName, "net/http", "httpsrc")
+		}
+		if class.PackagePath == "net/url" {
+			cm.AddImportWithAlias(pkgName, "net/url", "urlsrc")
+		}
+		// 精确注入 SourceType（与类相同规则）
+		if class.PackagePath != "" && class.TypeName != "" {
+			base := class.PackageName
+			if base == "" {
+				parts := strings.Split(class.PackagePath, "/")
+				base = parts[len(parts)-1]
+			}
+			alias := base + "src"
+			cm.AddImportWithAlias(pkgName, class.PackagePath, alias)
+			srcType := alias + "." + class.TypeName
+			if class.IsStruct {
+				srcType = "*" + srcType
+			}
+			methodTemplateData.SourceType = srcType
+		} else {
+			methodTemplateData.SourceType = class.TypeName
+		}
 		methodTemplateData.BodyNewMethod = mb["BodyNewMethod"]
 		methodTemplateData.BodyGetMethodName = mb["BodyGetMethodName"]
-		methodTemplateData.BodyMethodCall = mb["BodyMethodCall"]
+		// 生成 Call(ctx, args) 体：从 ctx 取参与错误处理并实际调用底层方法
+		{
+			var b strings.Builder
+			// 辅助：构建目标类型表达式（用于 AnyValue 断言与数值转换目标）
+			var buildTypeExpr func(t *core.TypeInfo) string
+			buildTypeExpr = func(t *core.TypeInfo) string {
+				if t == nil {
+					return "any"
+				}
+				// 基本类型直接返回
+				if t.IsBasicType() {
+					return t.TypeName
+				}
+				// 指针类型
+				if t.IsPointer {
+					et := t.GetElementType()
+					return "*" + buildTypeExpr(et)
+				}
+				// 切片类型
+				if t.IsSliceType() {
+					et := t.GetElementType()
+					return "[]" + buildTypeExpr(et)
+				}
+				// 映射类型
+				if t.IsMapType() {
+					kt := t.GetKeyType()
+					et := t.GetElementType()
+					return "map[" + buildTypeExpr(kt) + "]" + buildTypeExpr(et)
+				}
+				// 包类型：按 origami 规则引入 alias: <basename>src
+				if t.PackagePath != "" && t.TypeName != "" {
+					parts := strings.Split(t.PackagePath, "/")
+					base := parts[len(parts)-1]
+					alias := base + "src"
+					cm.AddImportWithAlias(pkgName, t.PackagePath, alias)
+					return alias + "." + t.TypeName
+				}
+				return t.TypeName
+			}
+			// 构建参数读取与转换
+			// 先检查是否包含函数参数
+			containsFuncParam := false
+			for _, p := range method.Parameters {
+				if p.Type != nil && p.Type.IsFunction {
+					containsFuncParam = true
+					break
+				}
+			}
+
+			for i := 0; i < len(method.Parameters); i++ {
+				// 如果包含函数参数，只读取第一个参数避免未使用变量
+				if containsFuncParam && i > 0 {
+					break
+				}
+				// 如果包含函数参数，不读取任何参数
+				if containsFuncParam {
+					break
+				}
+				b.WriteString("a")
+				b.WriteString(strconv.Itoa(i))
+				b.WriteString(", ok := ctx.GetIndexValue(")
+				b.WriteString(strconv.Itoa(i))
+				b.WriteString(")\n")
+				b.WriteString("\tif !ok { return nil, data.NewErrorThrow(nil, errors.New(\"缺少参数, index: ")
+				b.WriteString(strconv.Itoa(i))
+				b.WriteString("\")) }\n")
+			}
+			// 生成转换后的参数局部变量 p<i>
+			b.WriteString("\t// 参数类型转换\n")
+			argNames := make([]string, 0, len(method.Parameters))
+			// 如果包含函数参数，跳过参数转换直接返回错误
+			if containsFuncParam {
+				b.WriteString("\treturn nil, data.NewErrorThrow(nil, errors.New(\"暂不支持带 callable 参数的方法代理: " + method.Name + "\"))")
+				methodTemplateData.BodyMethodCall = b.String()
+				goto END_CALL
+			}
+
+			for i, p := range method.Parameters {
+				name := "p" + strconv.Itoa(i)
+				b.WriteString("\tvar " + name + " ")
+				// 根据方法签名强制修正参数类型（避免类型不匹配）
+				forceType := ""
+				if method.Name == "JoinPath" && i == 0 {
+					forceType = "string" // url.JoinPath 第一个参数应该是 string
+				}
+				if method.Name == "AddCookie" && i == 0 {
+					forceType = "*httpsrc.Cookie" // http.AddCookie 第一个参数应该是 *http.Cookie
+				}
+				if method.Name == "ResolveReference" && i == 0 {
+					forceType = "*urlsrc.URL" // url.ResolveReference 第一个参数应该是 *url.URL
+				}
+				if method.Name == "Handler" && i == 0 {
+					forceType = "*httpsrc.Request" // http.Handler 第一个参数应该是 *http.Request
+				}
+				if method.Name == "ServeHTTP" && i == 1 {
+					forceType = "*httpsrc.Request" // http.ServeHTTP 第二个参数应该是 *http.Request
+				}
+				if method.Name == "WriteSubset" && i == 1 {
+					forceType = "map[string]bool" // http.WriteSubset 第二个参数应该是 map[string]bool
+				}
+				if forceType != "" {
+					if forceType == "string" {
+						b.WriteString(forceType + "\n\t" + name + " = a" + strconv.Itoa(i) + ".(*data.StringValue).AsString()\n")
+					} else {
+						b.WriteString(forceType + "\n\t" + name + ", _ = a" + strconv.Itoa(i) + ".(*data.AnyValue).Value.(" + forceType + ")\n")
+					}
+					argNames = append(argNames, name)
+					continue
+				}
+				switch {
+				case p.Type != nil && p.Type.TypeName == "string":
+					b.WriteString("string\n\t" + name + " = a" + strconv.Itoa(i) + ".(*data.StringValue).AsString()\n")
+				case p.Type != nil && (p.Type.TypeName == "bool"):
+					b.WriteString("bool\n\t{ x,_ := a" + strconv.Itoa(i) + ".(*data.BoolValue).AsBool(); " + name + " = x }\n")
+				case p.Type != nil && (p.Type.TypeName == "float32" || p.Type.TypeName == "float64"):
+					b.WriteString(p.Type.TypeName + "\n\t{ x,_ := a" + strconv.Itoa(i) + ".(*data.FloatValue).AsFloat(); " + name + " = " + p.Type.TypeName + "(x) }\n")
+				case p.Type != nil && (p.Type.TypeName == "int" || p.Type.TypeName == "int8" || p.Type.TypeName == "int16" || p.Type.TypeName == "int32" || p.Type.TypeName == "int64" || p.Type.TypeName == "uint" || p.Type.TypeName == "uint8" || p.Type.TypeName == "uint16" || p.Type.TypeName == "uint32" || p.Type.TypeName == "uint64"):
+					b.WriteString(p.Type.TypeName + "\n\t{ x,_ := a" + strconv.Itoa(i) + ".(*data.IntValue).AsInt(); " + name + " = " + p.Type.TypeName + "(x) }\n")
+				case p.Type != nil && p.Type.IsSliceType() && p.Type.GetElementType() != nil && p.Type.GetElementType().TypeName == "uint8":
+					// []byte 特化
+					b.WriteString("[]byte\n\t" + name + ", _ = a" + strconv.Itoa(i) + ".(*data.AnyValue).Value.([]byte)\n")
+				case p.Type != nil && p.Type.IsSliceType() && p.Type.GetElementType() != nil && p.Type.GetElementType().TypeName == "string":
+					b.WriteString("[]string\n\t" + name + ", _ = a" + strconv.Itoa(i) + ".(*data.AnyValue).Value.([]string)\n")
+				case p.Type != nil && p.Type.IsFunction:
+					// 函数类型：使用具体的函数签名或通用 func
+					b.WriteString("func()\n\t" + name + " = func() { /* placeholder for callable */ }\n")
+				default:
+					// 复杂类型：尝试具体断言
+					tExpr := buildTypeExpr(p.Type)
+					if tExpr != "" && tExpr != "any" {
+						b.WriteString(tExpr + "\n\t" + name + ", _ = a" + strconv.Itoa(i) + ".(*data.AnyValue).Value.(" + tExpr + ")\n")
+					} else {
+						b.WriteString("any\n\t" + name + " = a" + strconv.Itoa(i) + ".(*data.AnyValue).Value\n")
+					}
+				}
+				argNames = append(argNames, name)
+			}
+			// 生成调用
+			b.WriteString("\t// 调用底层方法\n")
+			if len(method.Returns) > 0 {
+				b.WriteString("\t")
+				for i := range method.Returns {
+					if i > 0 {
+						b.WriteString(", ")
+					}
+					b.WriteString("_")
+				}
+				b.WriteString(" = m.source.")
+				b.WriteString(method.Name)
+				b.WriteString("(")
+				for i, nm := range argNames {
+					if i > 0 {
+						b.WriteString(", ")
+					}
+					b.WriteString(nm)
+				}
+				b.WriteString(")\n")
+			} else {
+				b.WriteString("\tm.source.")
+				b.WriteString(method.Name)
+				b.WriteString("(")
+				for i, nm := range argNames {
+					if i > 0 {
+						b.WriteString(", ")
+					}
+					b.WriteString(nm)
+				}
+				b.WriteString(")\n")
+			}
+			b.WriteString("\treturn nil, nil")
+			methodTemplateData.BodyMethodCall = b.String()
+		END_CALL:
+		}
+		methodTemplateData.BodyMethodGetModifier = mb["BodyMethodGetModifier"]
+		methodTemplateData.BodyMethodGetIsStatic = mb["BodyMethodGetIsStatic"]
+		// 基于参数数量生成占位 GetParams（带类型信息）
+		if len(methodTemplateData.Methods) > 0 {
+			params := methodTemplateData.Methods[0].Parameters
+			if len(params) > 0 {
+				var b strings.Builder
+				b.WriteString("return []data.GetValue{")
+				for i, p := range params {
+					if i > 0 {
+						b.WriteString(", ")
+					}
+					phpType := "mixed"
+					if strings.Contains(p.Type, "string") {
+						phpType = "string"
+					} else if strings.Contains(p.Type, "int") {
+						phpType = "int"
+					} else if strings.Contains(p.Type, "float") {
+						phpType = "float"
+					} else if strings.Contains(p.Type, "bool") {
+						phpType = "bool"
+					} else if strings.Contains(p.Type, "func") {
+						phpType = "callable"
+					} else if strings.Contains(p.Type, "[]") || strings.Contains(p.Type, "map[") {
+						phpType = "array"
+					}
+					name := p.Name
+					if name == "" {
+						name = "param" + strconv.Itoa(p.Index)
+					}
+					b.WriteString("node.NewParameter(nil, \"")
+					b.WriteString(name)
+					b.WriteString("\", ")
+					b.WriteString(strconv.Itoa(p.Index))
+					b.WriteString(", nil, data.NewBaseType(\"")
+					b.WriteString(phpType)
+					b.WriteString("\"))")
+				}
+				b.WriteString("}")
+				methodTemplateData.BodyMethodGetParams = b.String()
+			} else {
+				methodTemplateData.BodyMethodGetParams = mb["BodyMethodGetParams"]
+			}
+		} else {
+			methodTemplateData.BodyMethodGetParams = mb["BodyMethodGetParams"]
+		}
+		// 变量占位
+		if len(methodTemplateData.Methods) > 0 {
+			params := methodTemplateData.Methods[0].Parameters
+			if len(params) > 0 {
+				var b strings.Builder
+				b.WriteString("return []data.Variable{")
+				for i, p := range params {
+					if i > 0 {
+						b.WriteString(", ")
+					}
+					name := p.Name
+					if name == "" {
+						name = "param" + strconv.Itoa(p.Index)
+					}
+					b.WriteString("node.NewVariable(nil, \"")
+					b.WriteString(name)
+					b.WriteString("\", ")
+					b.WriteString(strconv.Itoa(p.Index))
+					b.WriteString(", nil)")
+				}
+				b.WriteString("}")
+				methodTemplateData.BodyMethodGetVariables = b.String()
+			} else {
+				methodTemplateData.BodyMethodGetVariables = mb["BodyMethodGetVariables"]
+			}
+		} else {
+			methodTemplateData.BodyMethodGetVariables = mb["BodyMethodGetVariables"]
+		}
+		// 返回类型
+		if len(methodTemplateData.Methods) > 0 {
+			rets := methodTemplateData.Methods[0].Returns
+			if len(rets) == 0 {
+				methodTemplateData.BodyMethodGetReturnType = "return data.NewBaseType(\"void\")"
+			} else if len(rets) == 1 {
+				phpType := "mixed"
+				if strings.Contains(rets[0].Type, "string") {
+					phpType = "string"
+				} else if strings.Contains(rets[0].Type, "int") {
+					phpType = "int"
+				} else if strings.Contains(rets[0].Type, "float") {
+					phpType = "float"
+				} else if strings.Contains(rets[0].Type, "bool") {
+					phpType = "bool"
+				} else if strings.Contains(rets[0].Type, "[]") || strings.Contains(rets[0].Type, "map[") {
+					phpType = "array"
+				}
+				methodTemplateData.BodyMethodGetReturnType = "return data.NewBaseType(\"" + phpType + "\")"
+			} else {
+				methodTemplateData.BodyMethodGetReturnType = "return data.NewBaseType(\"array\")"
+			}
+		} else {
+			methodTemplateData.BodyMethodGetReturnType = mb["BodyMethodGetReturnType"]
+		}
 		body, err := cg.templates.GenerateMethod(methodTemplateData)
 		if err != nil {
 			return core.NewGeneratorError(core.ErrCodeCodeGeneration,

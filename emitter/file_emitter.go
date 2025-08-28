@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/template"
 )
@@ -13,6 +14,8 @@ type FileEmitterImpl struct {
 	outputRoot  string
 	registry    map[string][]string // 包名 -> 文件列表
 	codeManager *CodeManager
+	pkgClasses  map[string]map[string]bool // 包名 -> 类名集合
+	pkgFuncs    map[string]map[string]bool // 包名 -> 函数名集合
 }
 
 // 创建新的文件输出器
@@ -25,6 +28,8 @@ func NewFileEmitter(outputRoot string) *FileEmitterImpl {
 		outputRoot:  outputRoot,
 		registry:    make(map[string][]string),
 		codeManager: NewCodeManager(nil), // 暂时传入nil，后续可以通过参数传入
+		pkgClasses:  make(map[string]map[string]bool),
+		pkgFuncs:    make(map[string]map[string]bool),
 	}
 }
 
@@ -116,6 +121,10 @@ func (fe *FileEmitterImpl) EmitClassFile(pkgName, fileName string, className str
 	}
 
 	fe.registerFile(pkgName, fileName)
+	if fe.pkgClasses[pkgName] == nil {
+		fe.pkgClasses[pkgName] = make(map[string]bool)
+	}
+	fe.pkgClasses[pkgName][className] = true
 	return nil
 }
 
@@ -167,43 +176,54 @@ func (fe *FileEmitterImpl) registerFile(pkgName, fileName string) {
 
 // 生成加载文件内容
 func (fe *FileEmitterImpl) generateLoadFileContent(pkgName string, functions, classes []string) (string, error) {
-	// 使用代码管理器生成文件头部
+	fe.codeManager.AddImport(pkgName, fe.codeManager.mapPackagePath("data"))
 	fileHeader := fe.codeManager.GenerateFileHeader(pkgName)
-
-	// 加载文件模板 - 不包含硬编码的import
-	const loadTemplate = `// LoadPackage 加载包
-func LoadPackage() map[string]interface{} {
-	pkg := make(map[string]interface{})
-
-	// 注册函数
-	{{range .Functions}}
-	pkg["{{.}}"] = New{{.}}Function()
-	{{end}}
-
-	// 注册类
-	{{range .Classes}}
-	pkg["{{.}}"] = New{{.}}Class()
-	{{end}}
-
-	return pkg
-}
-
-// GetFunction 获取函数
-func GetFunction(name string) (interface{}, bool) {
-	pkg := LoadPackage()
-	fn, exists := pkg[name]
-	return fn, exists
-}
-
-// GetClass 获取类
-func GetClass(name string) (interface{}, bool) {
-	pkg := LoadPackage()
-	cls, exists := pkg[name]
-	return cls, exists
+	funcSet := map[string]bool{}
+	for _, n := range functions {
+		funcSet[n] = true
+	}
+	if m := fe.pkgFuncs[pkgName]; m != nil {
+		for n := range m {
+			funcSet[n] = true
+		}
+	}
+	functions = functions[:0]
+	for n := range funcSet {
+		functions = append(functions, n)
+	}
+	sort.Strings(functions)
+	classSet := map[string]bool{}
+	for _, n := range classes {
+		classSet[n] = true
+	}
+	if m := fe.pkgClasses[pkgName]; m != nil {
+		for n := range m {
+			classSet[n] = true
+		}
+	}
+	classes = classes[:0]
+	for n := range classSet {
+		// 仅收集确实属于本包且已生成的类文件
+		filePath := filepath.Join(fe.outputRoot, pkgName, strings.ToLower(n)+"_class.go")
+		if fe.FileExists(filePath) {
+			classes = append(classes, n)
+		}
+	}
+	sort.Strings(classes)
+	const loadTemplate = `// Load 由生成器产生：注册本包函数与类
+func Load(vm data.VM) {
+	for _, fun := range []data.FuncStmt{
+		{{- range .Functions }}
+		New{{.}}Function(),
+		{{- end }}
+	} {
+		vm.AddFunc(fun)
+	}
+	{{- range .Classes }}
+	vm.AddClass(New{{.}}Class())
+	{{- end }}
 }
 `
-
-	// 准备模板数据
 	data := struct {
 		Functions []string
 		Classes   []string
@@ -211,19 +231,24 @@ func GetClass(name string) (interface{}, bool) {
 		Functions: functions,
 		Classes:   classes,
 	}
-
-	// 执行模板
 	tmpl, err := template.New("load").Parse(loadTemplate)
 	if err != nil {
 		return "", fmt.Errorf("解析加载文件模板失败: %v", err)
 	}
-
 	var buf strings.Builder
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("执行加载文件模板失败: %v", err)
 	}
-
-	// 组合文件头部和内容
 	content := fileHeader + "\n\n" + buf.String()
 	return content, nil
+}
+
+func (fe *FileEmitterImpl) RegisterClass(pkgName, className string) {
+	if fe.pkgClasses == nil {
+		fe.pkgClasses = make(map[string]map[string]bool)
+	}
+	if fe.pkgClasses[pkgName] == nil {
+		fe.pkgClasses[pkgName] = make(map[string]bool)
+	}
+	fe.pkgClasses[pkgName][className] = true
 }
