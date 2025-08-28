@@ -1,0 +1,76 @@
+package {{.PackageName}}
+
+import (
+	"fmt"
+	"github.com/php-any/origami/data"
+	"github.com/php-any/origami/node"
+)
+
+// {{.FunctionName}}Function 函数代理
+type {{.FunctionName}}Function struct {
+	node.Node
+}
+
+// New{{.FunctionName}}Function 创建新的函数代理
+func New{{.FunctionName}}Function() *{{.FunctionName}}Function {
+	return &{{.FunctionName}}Function{}
+}
+
+// GetName 获取函数名
+func (f *{{.FunctionName}}Function) GetName() string {
+	return "{{.FunctionName}}"
+}
+
+// Call 调用函数
+func (f *{{.FunctionName}}Function) Call(ctx data.Context, args []data.Value) (data.GetValue, data.Control) {
+	{{- if .Parameters}}
+	// 参数转换
+	{{- range $index, $param := .Parameters}}
+	var arg{{$index}} {{$param.Type}}
+	if len(args) > {{$index}} {
+		switch v := args[{{$index}}].(type) {
+		case *data.StringValue:
+			arg{{$index}} = v.Value
+		case *data.IntValue:
+			arg{{$index}} = v.Value
+		case *data.BoolValue:
+			arg{{$index}} = v.Value
+		case *data.FloatValue:
+			arg{{$index}} = v.Value
+		case *data.ClassValue:
+			if p, ok := v.Class.(interface{ GetSource() any }); ok {
+				if src := p.GetSource(); src != nil {
+					arg{{$index}} = src.({{$param.Type}})
+				}
+			}
+		case *data.ProxyValue:
+			if p, ok := v.Class.(interface{ GetSource() any }); ok {
+				if src := p.GetSource(); src != nil {
+					arg{{$index}} = src.({{$param.Type}})
+				}
+			}
+		case *data.AnyValue:
+			arg{{$index}} = v.Value.({{$param.Type}})
+		default:
+			return nil, data.NewErrorThrow(nil, fmt.Errorf("{{$.FunctionName}} 参数类型不支持, index: {{$index}}"))
+		}
+	} else {
+		return nil, data.NewErrorThrow(nil, fmt.Errorf("{{$.FunctionName}} 缺少参数, index: {{$index}}"))
+	}
+	{{- end}}
+	{{- end}}
+
+	// TODO: 实现实际的函数调用逻辑
+	// 这里应该调用原始函数
+
+	{{- if .Returns}}
+	// 返回值处理
+	{{- range $index, $ret := .Returns}}
+	var ret{{$index}} {{$ret.Type}}
+	{{- end}}
+	
+	return data.NewAnyValue(ret0), nil
+	{{- else}}
+	return data.NewStringValue("{{.FunctionName}} 调用完成"), nil
+	{{- end}}
+}

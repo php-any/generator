@@ -1,0 +1,76 @@
+package {{.PackageName}}
+
+import (
+	"fmt"
+	"github.com/php-any/origami/data"
+)
+
+{{ $m := index .Methods 0 }}
+
+// {{$m.Name}}Method 方法代理
+type {{$m.Name}}Method struct {
+	source {{.ClassName}}
+}
+
+// New{{$m.Name}}Method 创建新的方法代理
+func New{{$m.Name}}Method(source {{.ClassName}}) *{{$m.Name}}Method {
+	return &{{$m.Name}}Method{
+		source: source,
+	}
+}
+
+// GetName 获取方法名
+func (m *{{$m.Name}}Method) GetName() string {
+	return "{{$m.Name}}"
+}
+
+// Call 调用方法
+func (m *{{$m.Name}}Method) Call(ctx data.Context, args []data.Value) (data.GetValue, data.Control) {
+	{{- if $m.Parameters}}
+	// 参数转换
+	{{- range $index, $param := $m.Parameters}}
+	var arg{{$index}} {{$param.Type}}
+	if len(args) > {{$index}} {
+		switch v := args[{{$index}}].(type) {
+		case *data.StringValue:
+			arg{{$index}} = v.Value
+		case *data.IntValue:
+			arg{{$index}} = v.Value
+		case *data.BoolValue:
+			arg{{$index}} = v.Value
+		case *data.FloatValue:
+			arg{{$index}} = v.Value
+		case *data.ClassValue:
+			if p, ok := v.Class.(interface{ GetSource() any }); ok {
+				if src := p.GetSource(); src != nil {
+					arg{{$index}} = src.({{$param.Type}})
+				}
+			}
+		case *data.ProxyValue:
+			if p, ok := v.Class.(interface{ GetSource() any }); ok {
+				if src := p.GetSource(); src != nil {
+					arg{{$index}} = src.({{$param.Type}})
+				}
+			}
+		case *data.AnyValue:
+			arg{{$index}} = v.Value.({{$param.Type}})
+		default:
+			return nil, data.NewErrorThrow(nil, fmt.Errorf("{{$.ClassName}}.{{$m.Name}} 参数类型不支持, index: {{$index}}"))
+		}
+	} else {
+		return nil, data.NewErrorThrow(nil, fmt.Errorf("{{$.ClassName}}.{{$m.Name}} 缺少参数, index: {{$index}}"))
+	}
+	{{- end}}
+	{{- end}}
+
+	// 调用源对象的方法
+	{{- if $m.Returns}}
+	{{- range $index, $ret := $m.Returns}}
+	result{{$index}} := m.source.{{$m.Name}}({{- range $i, $p := $m.Parameters}}{{if $i}}, {{end}}arg{{$i}}{{- end}})
+	{{- end}}
+	return data.NewAnyValue(result0), nil
+	{{- else}}
+	m.source.{{$m.Name}}({{- range $i, $p := $m.Parameters}}{{if $i}}, {{end}}arg{{$i}}{{- end}})
+	return data.NewStringValue("{{$m.Name}} 调用完成"), nil
+	{{- end}}
+}

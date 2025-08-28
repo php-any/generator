@@ -1,0 +1,59 @@
+global_prefix: origami
+output_root: generated
+max_depth: 5
+parallel: true
+verbose: false
+
+blacklist:
+  packages:
+    - internal/*
+    - vendor/*
+  types:
+    - context.Context
+    - time.Time
+  methods:
+    - String
+    - Error
+  use_regex: false
+  patterns: []
+
+package_prefixes:
+  github.com/php-any/origami/application: appsrc
+  github.com/php-any/origami/window: windowsrc
+  github.com/php-any/origami/menu: menusrc
+
+package_mappings:
+  applicationsrc: github.com/php-any/origami/application
+  contextsrc: github.com/php-any/origami/context
+  eventssrc: github.com/php-any/origami/events
+  httpsrc: github.com/php-any/origami/http
+  windowsrc: github.com/php-any/origami/window
+  menusrc: github.com/php-any/origami/menu
+  dialogsrc: github.com/php-any/origami/dialog
+  clipboardsrc: github.com/php-any/origami/clipboard
+  keyboardsrc: github.com/php-any/origami/keyboard
+  mousesrc: github.com/php-any/origami/mouse
+  devicesrc: github.com/php-any/origami/device
+  storagesrc: github.com/php-any/origami/storage
+  networkingsrc: github.com/php-any/origami/networking
+  securitysrc: github.com/php-any/origami/security
+  uilibsrc: github.com/php-any/origami/uilib
+  customsrc: github.com/example/custom
+  # 标准库映射
+  http: net/http
+  context: context
+  time: time
+  fmt: fmt
+  os: os
+  io: io
+
+advanced:
+  debug: false
+  keep_comments: true
+  generate_tests: false
+  template_path: ./templates
+  cache:
+    enabled: true
+    directory: ./cache
+    ttl: 3600
+    max_size: 1000

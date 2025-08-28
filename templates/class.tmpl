@@ -1,0 +1,89 @@
+package {{.PackageName}}
+
+import (
+	"fmt"
+	"github.com/php-any/origami/data"
+	"github.com/php-any/origami/node"
+)
+
+// {{.ClassName}}Class 类代理
+type {{.ClassName}}Class struct {
+	node.Node
+	source {{.ClassName}}
+}
+
+// New{{.ClassName}}Class 创建新的类代理
+func New{{.ClassName}}Class() *{{.ClassName}}Class {
+	return &{{.ClassName}}Class{}
+}
+
+// New{{.ClassName}}ClassFrom 从源对象创建类代理
+func New{{.ClassName}}ClassFrom(source {{.ClassName}}) *{{.ClassName}}Class {
+	return &{{.ClassName}}Class{
+		source: source,
+	}
+}
+
+// GetSource 获取源对象
+func (c *{{.ClassName}}Class) GetSource() any {
+	return c.source
+}
+
+// GetProperty 获取属性值
+func (c *{{.ClassName}}Class) GetProperty(name string) (data.GetValue, data.Control) {
+	switch name {
+	{{- range .Fields}}
+	case "{{.Name}}":
+		return data.NewAnyValue(c.source.{{.Name}}), nil
+	{{- end}}
+	default:
+		return nil, data.NewErrorThrow(nil, fmt.Errorf("属性 %s 不存在", name))
+	}
+}
+
+// SetProperty 设置属性值
+func (c *{{.ClassName}}Class) SetProperty(name string, value data.Value) {
+	switch name {
+	{{- range .Fields}}
+	case "{{.Name}}":
+		switch v := value.(type) {
+		case *data.StringValue:
+			c.source.{{.Name}} = v.Value
+		case *data.IntValue:
+			c.source.{{.Name}} = v.Value
+		case *data.BoolValue:
+			c.source.{{.Name}} = v.Value
+		case *data.FloatValue:
+			c.source.{{.Name}} = v.Value
+		case *data.ClassValue:
+			if p, ok := v.Class.(interface{ GetSource() any }); ok {
+				if src := p.GetSource(); src != nil {
+					c.source.{{.Name}} = src.({{.Type}})
+				}
+			}
+		case *data.ProxyValue:
+			if p, ok := v.Class.(interface{ GetSource() any }); ok {
+				if src := p.GetSource(); src != nil {
+					c.source.{{.Name}} = src.({{.Type}})
+				}
+			}
+		case *data.AnyValue:
+			c.source.{{.Name}} = v.Value.({{.Type}})
+		}
+	{{- end}}
+	}
+}
+
+// GetProperties 获取所有属性
+func (c *{{.ClassName}}Class) GetProperties() map[string]data.GetValue {
+	props := make(map[string]data.GetValue)
+	{{- range .Fields}}
+	props["{{.Name}}"] = data.NewAnyValue(c.source.{{.Name}})
+	{{- end}}
+	return props
+}
+
+// GetValue 获取值
+func (c *{{.ClassName}}Class) GetValue(ctx data.Context) (data.GetValue, data.Control) {
+	return data.NewClassValue(c, ctx.CreateBaseContext()), nil
+}
