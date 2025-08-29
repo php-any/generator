@@ -16,6 +16,32 @@ func lowerFirst(s string) string {
 	return string(runes)
 }
 
+// isGoKeyword 判断标识符是否为 Go 关键字或预声明标识符
+func isGoKeyword(s string) bool {
+	switch s {
+	case "break", "default", "func", "interface", "select",
+		"case", "defer", "go", "map", "struct",
+		"chan", "else", "goto", "package", "switch",
+		"const", "fallthrough", "if", "range", "type",
+		"continue", "for", "import", "return", "var",
+		// 预声明标识符，避免与内置冲突
+		"bool", "byte", "complex64", "complex128", "error", "float32", "float64",
+		"int", "int8", "int16", "int32", "int64", "rune", "string", "uint", "uint8",
+		"uint16", "uint32", "uint64", "uintptr", "true", "false", "iota", "nil":
+		return true
+	}
+	return false
+}
+
+// safeLowerFirst 生成可用作 Go 标识符的字段/变量名
+func safeLowerFirst(s string) string {
+	v := lowerFirst(s)
+	if v == "_" || isGoKeyword(v) {
+		return "_" + v
+	}
+	return v
+}
+
 // upperFirst 将标识符首字母大写
 func upperFirst(s string) string {
 	if s == "" {

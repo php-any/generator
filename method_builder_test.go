@@ -5,20 +5,16 @@ import (
 	"os"
 	"testing"
 
-	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/redis/go-redis/v9"
 )
 
 func Test_buildMethodFileBody(t *testing.T) {
 	sqlArray := []any{
-		application.New,
-		application.NewMenu,
-		application.NewAppMenu,
-		application.NewWindowEvent,
-		application.WebviewWindowOptions{},
+		redis.NewClient,
 	}
 
 	outRoot := "origami"
-	sqlOpt := GenOptions{OutputRoot: outRoot, NamePrefix: "wails\\\\application"}
+	sqlOpt := GenOptions{OutputRoot: outRoot, NamePrefix: "redis"}
 	for _, elem := range sqlArray {
 		if err := GenerateFromConstructor(elem, sqlOpt); err != nil {
 			fmt.Fprintln(os.Stderr, "生成失败:", err)

@@ -119,6 +119,10 @@ func GenerateFromConstructor(fn any, opt GenOptions) error {
 	for _, n := range names {
 		m := allMethods[n]
 		file := filepath.Join(outDir, strings.ToLower(typeName)+"_"+strings.ToLower(n)+"_method.go")
+		// 若主文件已存在，认为该方法已生成，直接跳过，避免生成后缀 _2/_3
+		if _, statErr := os.Stat(file); statErr == nil {
+			continue
+		}
 		body, ok := buildMethodFileBody(srcPkgPath, pkgName, typeName, m, true)
 		if !ok {
 			continue
@@ -280,9 +284,15 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	// 仅记录成功生成的方法，避免类文件引用不存在的方法
+	supported := map[string]reflect.Method{}
 	for _, n := range names {
 		mm := methods[n]
 		file := filepath.Join(outDir, strings.ToLower(typeName)+"_"+strings.ToLower(n)+"_method.go")
+		// 若主文件已存在，认为该方法已生成，直接跳过，避免生成后缀 _2/_3
+		if _, statErr := os.Stat(file); statErr == nil {
+			continue
+		}
 		body, ok := buildMethodFileBody(srcPkgPath, pkgName, typeName, mm, true)
 		if !ok {
 			continue
@@ -290,6 +300,7 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 		if err := EmitFile(file, pkgName, body); err != nil {
 			return err
 		}
+		supported[n] = mm
 
 		// 递归处理该方法的返回值和参数，生成相关代理类
 		mt := mm.Type
@@ -343,7 +354,7 @@ func generateClassFromType(structPtr reflect.Type, opt GenOptions) error {
 
 	// 类文件（即便无方法也生成空类）
 	classFile := filepath.Join(outDir, strings.ToLower(typeName)+"_class.go")
-	classBody := buildClassFileBody(srcPkgPath, pkgName, typeName, methods, structType, effectiveNamePrefix(pkgName, opt))
+	classBody := buildClassFileBody(srcPkgPath, pkgName, typeName, supported, structType, effectiveNamePrefix(pkgName, opt))
 	if err := EmitFile(classFile, pkgName, classBody); err != nil {
 		return err
 	}

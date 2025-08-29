@@ -13,6 +13,48 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 	importAlias := pkgName + "src"
 	// import 延后输出，先收集依赖
 
+	// 本地类型字符串格式化：同包使用导入别名，跨包使用对方包短名
+	var formatType func(t reflect.Type) string
+	formatType = func(t reflect.Type) string {
+		if t == nil {
+			return "any"
+		}
+		switch t.Kind() {
+		case reflect.Ptr:
+			return "*" + formatType(t.Elem())
+		case reflect.Slice:
+			return "[]" + formatType(t.Elem())
+		case reflect.Array:
+			return "[" + strconvItoa(t.Len()) + "]" + formatType(t.Elem())
+		case reflect.Map:
+			return "map[" + formatType(t.Key()) + "]" + formatType(t.Elem())
+		case reflect.Chan:
+			return "chan " + formatType(t.Elem())
+		case reflect.Interface:
+			if t.Name() == "" {
+				return "any"
+			}
+			if t.PkgPath() == "" {
+				return t.Name()
+			}
+			if pkgBaseName(t.PkgPath()) == pkgBaseName(srcPkgPath) {
+				return importAlias + "." + t.Name()
+			}
+			return pkgBaseName(t.PkgPath()) + "." + t.Name()
+		default:
+			if t.Name() != "" {
+				if t.PkgPath() == "" {
+					return t.Name()
+				}
+				if pkgBaseName(t.PkgPath()) == pkgBaseName(srcPkgPath) {
+					return importAlias + "." + t.Name()
+				}
+				return pkgBaseName(t.PkgPath()) + "." + t.Name()
+			}
+			return t.String()
+		}
+	}
+
 	// 收集导出字段（属性）
 	var fields []reflect.StructField
 	if structType != nil {
@@ -111,8 +153,8 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 		// 默认构造函数方法（空逻辑）
 		fmt.Fprintf(b, "\t\tconstruct: &%sConstructMethod{source: nil},\n", typeName)
 		for _, n := range names {
-			// 字段名用小写；类型名使用导出方法名，确保形如 StmtCloseMethod
-			fmt.Fprintf(b, "\t\t%s: &%s%sMethod{source: nil},\n", lowerFirst(n), typeName, n)
+			// 字段名用小写（关键字安全）；类型名使用导出方法名，确保形如 StmtCloseMethod
+			fmt.Fprintf(b, "\t\t%s: &%s%sMethod{source: nil},\n", safeLowerFirst(n), typeName, n)
 		}
 		b.WriteString("\t}\n}\n\n")
 	}
@@ -126,7 +168,7 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 	fmt.Fprintf(b, "\treturn &%[1]sClass{\n\t\tsource: source,\n", typeName)
 	fmt.Fprintf(b, "\t\tconstruct: &%sConstructMethod{source: source},\n", typeName)
 	for _, n := range names {
-		fmt.Fprintf(b, "\t\t%s: &%s%sMethod{source: source},\n", lowerFirst(n), typeName, n)
+		fmt.Fprintf(b, "\t\t%s: &%s%sMethod{source: source},\n", safeLowerFirst(n), typeName, n)
 	}
 	b.WriteString("\t}\n}\n\n")
 
@@ -135,7 +177,7 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 	// 构造函数方法（空实现）
 	fmt.Fprintf(b, "\tconstruct data.Method\n")
 	for _, n := range names {
-		fmt.Fprintf(b, "\t%[1]s data.Method\n", lowerFirst(n))
+		fmt.Fprintf(b, "\t%[1]s data.Method\n", safeLowerFirst(n))
 	}
 	b.WriteString("}\n\n")
 
@@ -230,28 +272,49 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 				isCrossPkg = ft.PkgPath() != "" && ft.PkgPath() != srcPkgPath
 			}
 			if isCrossPkg {
-				// 生成类型字符串，并将同包前缀替换为导入别名
-				typeStr := ft.String()
-				typeStr = strings.ReplaceAll(typeStr, pkgBaseName(srcPkgPath)+".", importAlias+".")
+				// 递归格式化类型（支持切片/指针等），避免出现 redis 前缀
+				typeStr := formatType(ft)
 				fmt.Fprintf(b, "\t\tif v, ok := value.(*data.AnyValue); ok { s.source.%[1]s = v.Value.(%s) }\n", field.Name, typeStr)
 				continue
 			}
 			switch {
+			case ft.Kind() == reflect.Slice:
+				// 切片赋值：支持 AnyValue 整体断言与 ArrayValue 元素逐个转换
+				elem := ft.Elem()
+				elemTypeStr := formatType(elem)
+				// 元素指针类型串（用于从 GetSource 解引用）
+				elemPtrTypeStr := elemTypeStr
+				needDeref := false
+				if elem.Kind() != reflect.Ptr {
+					needDeref = true
+					elemPtrTypeStr = "*" + elemTypeStr
+				}
+				fmt.Fprintf(b, "\t\tswitch v := value.(type) {\n")
+				fmt.Fprintf(b, "\t\tcase *data.AnyValue:\n\t\t\ts.source.%[1]s = v.Value.([]%[2]s)\n", field.Name, elemTypeStr)
+				fmt.Fprintf(b, "\t\tcase *data.ArrayValue:\n\t\t\ts.source.%[1]s = make([]%[2]s, len(v.Value))\n\t\t\tfor i, item := range v.Value {\n", field.Name, elemTypeStr)
+				fmt.Fprintf(b, "\t\t\t\tswitch item := item.(type) {\n")
+				fmt.Fprintf(b, "\t\t\t\tcase *data.AnyValue:\n\t\t\t\t\ts.source.%[1]s[i] = item.Value.(%[2]s)\n", field.Name, elemTypeStr)
+				if needDeref {
+					fmt.Fprintf(b, "\t\t\t\tcase data.GetSource:\n\t\t\t\t\ts.source.%[1]s[i] = *item.GetSource().(%[2]s)\n", field.Name, elemPtrTypeStr)
+				} else {
+					fmt.Fprintf(b, "\t\t\t\tcase data.GetSource:\n\t\t\t\t\ts.source.%[1]s[i] = item.GetSource().(%[2]s)\n", field.Name, elemPtrTypeStr)
+				}
+				fmt.Fprintf(b, "\t\t\t\t}\n\t\t\t}\n")
+				fmt.Fprintf(b, "\t\t}\n")
 			case ft.Kind() == reflect.Interface && ft.PkgPath() != "" && ft.Name() != "":
-				fullIface := ft.String()
-				fullIface = strings.ReplaceAll(fullIface, pkgBaseName(srcPkgPath)+".", importAlias+".")
+				fullIface := formatType(ft)
 				fmt.Fprintf(b, "\t\tswitch v := value.(type) {\n")
 				fmt.Fprintf(b, "\t\tcase data.GetSource:\n\t\t\tif src := v.GetSource(); src != nil { s.source.%[1]s = src.(%[2]s) }\n", field.Name, fullIface)
 				fmt.Fprintf(b, "\t\tcase *data.AnyValue:\n\t\t\ts.source.%[1]s = v.Value.(%[2]s)\n", field.Name, fullIface)
 				fmt.Fprintf(b, "\t\t}\n")
 			case ft.Kind() == reflect.Ptr && ft.Elem() != nil && ft.Elem().Kind() == reflect.Struct:
-				ptrType := "*" + strings.ReplaceAll(ft.Elem().String(), pkgBaseName(srcPkgPath)+".", importAlias+".")
+				ptrType := "*" + formatType(ft.Elem())
 				fmt.Fprintf(b, "\t\tswitch v := value.(type) {\n")
 				fmt.Fprintf(b, "\t\tcase data.GetSource:\n\t\t\tif src := v.GetSource(); src != nil { if ptr, ok := src.(%[2]s); ok { s.source.%[1]s = ptr } }\n", field.Name, ptrType)
 				fmt.Fprintf(b, "\t\tcase *data.AnyValue:\n\t\t\ts.source.%[1]s = v.Value.(%[2]s)\n", field.Name, ptrType)
 				fmt.Fprintf(b, "\t\t}\n")
 			case ft.Kind() == reflect.Struct && ft.PkgPath() != "" && ft.Name() != "":
-				valType := strings.ReplaceAll(ft.String(), pkgBaseName(srcPkgPath)+".", importAlias+".")
+				valType := formatType(ft)
 				fmt.Fprintf(b, "\t\tswitch v := value.(type) {\n")
 				fmt.Fprintf(b, "\t\tcase data.GetSource:\n\t\t\tif src := v.GetSource(); src != nil { if ptr, ok := src.(*%[2]s); ok { s.source.%[1]s = *ptr } else { s.source.%[1]s = src.(%[2]s) } }\n", field.Name, valType)
 				fmt.Fprintf(b, "\t\tcase *data.AnyValue:\n\t\t\ts.source.%[1]s = v.Value.(%[2]s)\n", field.Name, valType)
@@ -262,34 +325,39 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 				case reflect.String:
 					// 若为同包命名基础类型，需做显式类型转换
 					if ft.Name() != "" && (ft.PkgPath() == srcPkgPath || ft.PkgPath() == "") {
-						typeStr := strings.ReplaceAll(ft.String(), pkgBaseName(srcPkgPath)+".", importAlias+".")
+						typeStr := formatType(ft)
 						fmt.Fprintf(b, "\t\tif sv, ok := value.(*data.StringValue); ok { s.source.%[1]s = %s(sv.AsString()) }\n", field.Name, typeStr)
 					} else {
 						fmt.Fprintf(b, "\t\tif sv, ok := value.(*data.StringValue); ok { s.source.%[1]s = sv.AsString() }\n", field.Name)
 					}
 				case reflect.Int:
 					if ft.Name() != "" && (ft.PkgPath() == srcPkgPath || ft.PkgPath() == "") {
-						typeStr := strings.ReplaceAll(ft.String(), pkgBaseName(srcPkgPath)+".", importAlias+".")
+						typeStr := formatType(ft)
 						fmt.Fprintf(b, "\t\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { s.source.%[1]s = %s(x) } }\n", field.Name, typeStr)
 					} else {
 						fmt.Fprintf(b, "\t\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { s.source.%[1]s = x } }\n", field.Name)
 					}
 				case reflect.Int64:
 					if ft.Name() != "" && (ft.PkgPath() == srcPkgPath || ft.PkgPath() == "") {
-						typeStr := strings.ReplaceAll(ft.String(), pkgBaseName(srcPkgPath)+".", importAlias+".")
+						typeStr := formatType(ft)
 						fmt.Fprintf(b, "\t\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { s.source.%[1]s = %s(int64(x)) } }\n", field.Name, typeStr)
 					} else {
 						fmt.Fprintf(b, "\t\tif iv, ok := value.(*data.IntValue); ok { if x, err := iv.AsInt(); err == nil { s.source.%[1]s = int64(x) } }\n", field.Name)
 					}
 				case reflect.Bool:
 					if ft.Name() != "" && (ft.PkgPath() == srcPkgPath || ft.PkgPath() == "") {
-						typeStr := strings.ReplaceAll(ft.String(), pkgBaseName(srcPkgPath)+".", importAlias+".")
+						typeStr := func() string {
+							if ft.PkgPath() == srcPkgPath {
+								return importAlias + "." + ft.Name()
+							}
+							return ft.Name()
+						}()
 						fmt.Fprintf(b, "\t\tif bv, ok := value.(*data.BoolValue); ok { if x, err := bv.AsBool(); err == nil { s.source.%[1]s = %s(x) } }\n", field.Name, typeStr)
 					} else {
 						fmt.Fprintf(b, "\t\tif bv, ok := value.(*data.BoolValue); ok { if x, err := bv.AsBool(); err == nil { s.source.%[1]s = x } }\n", field.Name)
 					}
 				default:
-					fmt.Fprintf(b, "\t\tif v, ok := value.(*data.AnyValue); ok { s.source.%[1]s = v.Value.(%[2]s) }\n", field.Name, strings.ReplaceAll(ft.String(), pkgBaseName(srcPkgPath)+".", importAlias+"."))
+					fmt.Fprintf(b, "\t\tif v, ok := value.(*data.AnyValue); ok { s.source.%[1]s = v.Value.(%[2]s) }\n", field.Name, formatType(ft))
 				}
 			}
 		}
@@ -303,14 +371,14 @@ func buildClassFileBody(srcPkgPath, pkgName, typeName string, methods map[string
 	// GetMethod
 	fmt.Fprintf(b, "func (s *%[1]sClass) GetMethod(name string) (data.Method, bool) {\n\tswitch name {\n", typeName)
 	for _, n := range names {
-		fmt.Fprintf(b, "\tcase \"%[1]s\": return s.%[1]s, true\n", lowerFirst(n))
+		fmt.Fprintf(b, "\tcase \"%[1]s\": return s.%[1]s, true\n", safeLowerFirst(n))
 	}
 	b.WriteString("\t}\n\treturn nil, false\n}\n\n")
 
 	// GetMethods
 	fmt.Fprintf(b, "func (s *%[1]sClass) GetMethods() []data.Method { return []data.Method{\n", typeName)
 	for _, n := range names {
-		fmt.Fprintf(b, "\t\ts.%s,\n", lowerFirst(n))
+		fmt.Fprintf(b, "\t\ts.%s,\n", safeLowerFirst(n))
 	}
 	b.WriteString("\t}\n}\n\n")
 	fmt.Fprintf(b, "func (s *%[1]sClass) GetConstruct() data.Method { return s.construct }\n", typeName)
