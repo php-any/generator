@@ -8,10 +8,10 @@
 
 **强调**：
 
-- **禁止**针对特定类型（如 `context.Context`、`sql.DB` 等）编写专门处理逻辑
-- **禁止**硬编码包名检查（如 `if t.PkgPath() == "context"`）
-- **禁止**硬编码类型名检查（如 `if t.Name() == "Context"`）
-- **禁止**硬编码导入逻辑（如 `if needsContext { b.WriteString("\"context\"\n") }`）
+- **禁止**针对任何特定类型编写专门处理逻辑
+- **禁止**硬编码包名检查（如 `if t.PkgPath() == "xxx"`）
+- **禁止**硬编码类型名检查（如 `if t.Name() == "Xxx"`）
+- **禁止**硬编码导入逻辑（如 `if needsXxx { b.WriteString("\"xxx\"\n") }`）
 - 所有复杂类型参数必须通用化处理，避免写死代码
 - 使用反射和类型系统进行动态处理
 - 导入包名必须通过反射动态获取，不得写死任何包名
@@ -44,18 +44,18 @@
 
 ```go
 // ❌ 禁止：硬编码包名检查
-if t.PkgPath() == "context" && t.Name() == "Context" {
-    return "context"
+if t.PkgPath() == "xxx" {
+    return "xxx"
 }
 
 // ❌ 禁止：硬编码导入逻辑
-if needsContext {
-    b.WriteString("\t\"context\"\n")
+if needsXxx {
+    b.WriteString("\t\"xxx\"\n")
 }
 
 // ❌ 禁止：硬编码类型处理
-case "context":
-    fmt.Fprintf(b, "a%d.(*data.AnyValue).Value.(context.Context)", i)
+case "xxx":
+    fmt.Fprintf(b, "a%d.(*data.AnyValue).Value.(%s)", i, t.String())
 ```
 
 **正确做法**：使用反射和类型系统进行通用化处理，让 Go 工具链自动处理导入。
@@ -82,18 +82,63 @@ case "context":
 ### 禁止写死（全局）
 
 - 任何与特定包/函数/类型名称绑定的写死逻辑一律禁止，例如：
-  - “如果是 database/sql.Open 则参数名为 XXX”的硬编码
+  - “如果是 xxx/yyy.Zzz 则参数名为 XXX”的硬编码
   - “某函数固定返回 YYY”的硬编码
 - 所有生成逻辑必须采用“启发式 + 类型/语义分析”方式；扩展行为通过可维护的通用规则实现，不允许内嵌针对某个符号的特判。
 
 ### 参数命名（启发式）
 
 - 参数名依据“类型 + 上下文”推导，不得写死：
-  - 指针解引用后的命名类型，如 `Context`→`ctx`、`Duration`→`d`、`*XxxOptions`→`opts`
+  - 指针解引用后的命名类型，如 `Xxx`→`xxx`、`Duration`→`d`、`*XxxOptions`→`opts`
   - 形参为切片/变长时优先命名为 `args`
   - 函数/方法名中含 `query/prepare/exec` 时的 string 参数优先命名为 `query`
   - `set`/`setmax` 系的整型参数优先命名为 `n`
   - 其它未匹配项统一命名 `paramN`
+
+### 函数设计原则
+
+**单一职责原则**：
+
+- 每个函数应该只负责一个明确的功能
+- 函数长度控制在合理范围内，避免过长
+- 复杂逻辑应该拆分为多个小函数
+
+**代码复用原则**：
+
+- 提取公共逻辑到独立函数
+- 相似的处理模式应该复用同一个函数
+- 避免在多个地方重复相同的代码
+
+**函数命名规范**：
+
+- 函数名应该清晰表达其功能
+- 使用动词+名词的形式，如 `checkMethodRecursiveGeneration`
+- 避免过于宽泛的名称，如 `process`、`handle`
+
+**示例**：
+
+```go
+// ❌ 不推荐：函数包含太多逻辑
+func buildClass(t reflect.Type, cache *GroupCache) error {
+    // 50+ 行代码，包含多种不同的处理逻辑
+}
+
+// ✅ 推荐：拆分为多个小函数
+func buildClass(t reflect.Type, cache *GroupCache) error {
+    // 主要逻辑，调用其他函数
+    checkMethodRecursiveGeneration(m, cache)
+    checkFieldRecursiveGeneration(t, cache)
+    generateClassFile(t, cache)
+}
+
+func checkMethodRecursiveGeneration(m reflect.Method, cache *GroupCache) {
+    // 专门处理方法的递归生成检查
+}
+
+func checkFieldRecursiveGeneration(t reflect.Type, cache *GroupCache) {
+    // 专门处理字段的递归生成检查
+}
+```
 
 ### 错误提示与跳过策略
 
