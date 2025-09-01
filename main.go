@@ -5,13 +5,12 @@ import (
 	"github.com/redis/go-redis/v9"
 	"os"
 
-	"github.com/php-any/generator/demo"
 	"github.com/php-any/generator/scr"
 )
 
 var config = scr.Config{
 	OutputRoot: "origami",
-	NamePrefix: "demo",
+	NamePrefix: "redis",
 	MaxDepth:   1000,
 	Blacklist: scr.BlacklistConfig{
 		Packages: []string{"time"},
@@ -20,11 +19,11 @@ var config = scr.Config{
 }
 
 var genList = []any{
-	// 函数测试
-	demo.NewUser,
-
-	// 循环引用测试
-	demo.Node{},
+	//// 函数测试
+	//demo.NewUser,
+	//
+	//// 循环引用测试
+	//demo.Node{},
 	redis.NewClient,
 }
 

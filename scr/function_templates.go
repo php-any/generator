@@ -65,7 +65,16 @@ func writeFunctionImplementation(b *strings.Builder, namePrefix, funcName string
 		for i, pName := range paramNames {
 			typeStr := getTypeString(paramTypes[i], fileCache)
 			// 替换包名为别名
-			typeStr = strings.ReplaceAll(typeStr, "demo.", importAlias+".")
+			paramType := paramTypes[i]
+			if paramType.Kind() == reflect.Ptr && paramType.Elem() != nil {
+				paramType = paramType.Elem()
+			}
+			if paramType.PkgPath() != "" {
+				originalPkgName := pkgBaseName(paramType.PkgPath())
+				if strings.Contains(typeStr, originalPkgName+".") {
+					typeStr = strings.ReplaceAll(typeStr, originalPkgName+".", importAlias+".")
+				}
+			}
 			fmt.Fprintf(b, "\t%s, err := utils.ConvertFromIndex[%s](ctx, %d)\n", pName, typeStr, i)
 			fmt.Fprintf(b, "\tif err != nil { return nil, data.NewErrorThrow(nil, fmt.Errorf(\"参数转换失败: %%v\", err)) }\n")
 		}
