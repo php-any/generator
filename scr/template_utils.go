@@ -27,7 +27,11 @@ func getTypeString(t reflect.Type, fileCache *FileCache) string {
 		return "interface{}"
 	case reflect.Struct, reflect.Interface:
 		if t.PkgPath() != "" {
-			// 使用包名
+			// 对于标准库类型，直接使用包名
+			if isStandardLibrary(t.PkgPath()) {
+				return t.PkgPath() + "." + t.Name()
+			}
+			// 对于第三方包，使用包名
 			pkgName := pkgBaseName(t.PkgPath())
 			return pkgName + "." + t.Name()
 		}
@@ -35,6 +39,13 @@ func getTypeString(t reflect.Type, fileCache *FileCache) string {
 	default:
 		return t.Name()
 	}
+}
+
+// isStandardLibrary 检查包路径是否属于标准库
+func isStandardLibrary(pkgPath string) bool {
+	// 标准库包路径不包含域名，直接以包名开头
+	// 例如: "context", "fmt", "time", "net/http" 等
+	return !strings.Contains(pkgPath, ".") && !strings.Contains(pkgPath, "/")
 }
 
 // lowerFirst 将名称首字母小写

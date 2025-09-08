@@ -65,16 +65,20 @@ func writeMethodImplementation(b *strings.Builder, typeName, methodName string, 
 	if len(paramNames) > 0 {
 		for i, pName := range paramNames {
 			typeStr := getTypeString(paramTypes[i], NewFileCache())
-			// 替换包名为别名
+			// 替换包名为别名，但跳过标准库类型
 			paramType := paramTypes[i]
 			if paramType.Kind() == reflect.Ptr && paramType.Elem() != nil {
 				paramType = paramType.Elem()
 			}
-			if paramType.PkgPath() != "" {
+			if paramType.PkgPath() != "" && !isStandardLibrary(paramType.PkgPath()) {
 				originalPkgName := pkgBaseName(paramType.PkgPath())
 				if strings.Contains(typeStr, originalPkgName+".") {
 					typeStr = strings.ReplaceAll(typeStr, originalPkgName+".", importAlias+".")
 				}
+			}
+			// 标记标准库包为已使用
+			if paramType.PkgPath() != "" && isStandardLibrary(paramType.PkgPath()) {
+				fileCache.MarkImportUsed(paramType.PkgPath())
 			}
 			fmt.Fprintf(b, "\t%s, err := utils.ConvertFromIndex[%s](ctx, %d)\n", pName, typeStr, i)
 			fmt.Fprintf(b, "\tif err != nil { return nil, data.NewErrorThrow(nil, fmt.Errorf(\"参数转换失败: %%v\", err)) }\n")

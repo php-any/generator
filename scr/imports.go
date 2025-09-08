@@ -31,6 +31,31 @@ func collectMethodImportsToCache(srcPkgPath, pkgName string, paramTypes []reflec
 	fileCache.AddImport("github.com/php-any/origami/node", "node")
 	fileCache.AddImport("fmt", "")
 	fileCache.AddImport("github.com/php-any/generator/utils", "utils")
+
+	// 收集标准库和第三方包的导入
+	allTypes := append(paramTypes, returnTypes...)
+	standardLibs := make(map[string]bool)
+	thirdPartyPkgs := make(map[string]bool)
+
+	for _, t := range allTypes {
+		if t.PkgPath() != "" && t.PkgPath() != srcPkgPath {
+			if isStandardLibrary(t.PkgPath()) {
+				standardLibs[t.PkgPath()] = true
+			} else {
+				thirdPartyPkgs[t.PkgPath()] = true
+			}
+		}
+	}
+
+	// 添加标准库导入
+	for pkgPath := range standardLibs {
+		fileCache.AddImport(pkgPath, "")
+	}
+
+	// 添加第三方包导入
+	for pkgPath := range thirdPartyPkgs {
+		fileCache.AddImport(pkgPath, pkgBaseName(pkgPath))
+	}
 }
 
 // collectMethodImports 收集方法文件需要的导入包（保留兼容性）
