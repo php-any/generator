@@ -160,8 +160,11 @@ func generateMethodFiles(structType reflect.Type, allMethods map[string]reflect.
 
 	// 结构体方法使用指针接收者；接口方法没有接收者
 	sourceIsPtr := structType.Kind() == reflect.Struct
-	for methodName, method := range allMethods {
-		methodFile := filepath.Join(outDir, strings.ToLower(typeName)+"_"+strings.ToLower(methodName)+"_method.go")
+	// 仅为冲突消解后的选中方法生成文件
+	selected := buildMethodFieldMapping(allMethods)
+	for _, chosenName := range selected {
+		method := allMethods[chosenName]
+		methodFile := filepath.Join(outDir, strings.ToLower(typeName)+"_"+strings.ToLower(chosenName)+"_method.go")
 
 		// 创建文件缓存
 		fileCache := NewFileCache()

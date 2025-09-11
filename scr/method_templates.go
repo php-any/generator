@@ -12,7 +12,7 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 	importAlias := pkgName + "src"
 
 	// 分析方法参数和返回值
-	paramTypes, paramNames := analyzeMethodParams(m, sourceIsPtr)
+	paramTypes, paramNames, isVariadic, variadicElem := analyzeMethodParams(m, sourceIsPtr)
 	returnTypes := analyzeMethodReturns(m)
 
 	// 收集导入
@@ -22,7 +22,7 @@ func buildMethodFileBody(srcPkgPath, pkgName, typeName string, m reflect.Method,
 	writeMethodStruct(b, typeName, m.Name, importAlias, structType, fileCache, srcPkgPath)
 
 	// 生成方法实现
-	writeMethodImplementation(b, typeName, m.Name, paramTypes, paramNames, returnTypes, importAlias, fileCache)
+	writeMethodImplementation(b, typeName, m.Name, paramTypes, paramNames, returnTypes, importAlias, fileCache, isVariadic, variadicElem)
 
 	// 在文件开头写入导入（在代码生成完成后，但需要插入到文件开头）
 	content := b.String()
@@ -51,40 +51,42 @@ func writeMethodStruct(b *strings.Builder, typeName, methodName, importAlias str
 }
 
 // writeMethodImplementation 写入方法实现
-func writeMethodImplementation(b *strings.Builder, typeName, methodName string, paramTypes []reflect.Type, paramNames []string, returnTypes []reflect.Type, importAlias string, fileCache *FileCache) {
+func writeMethodImplementation(b *strings.Builder, typeName, methodName string, paramTypes []reflect.Type, paramNames []string, returnTypes []reflect.Type, importAlias string, fileCache *FileCache, isVariadic bool, variadicElem reflect.Type) {
 	fmt.Fprintf(b, "func (h *%s%sMethod) Call(ctx data.Context) (data.GetValue, data.Control) {\n", typeName, methodName)
 
 	// 标记使用的导入
 	fileCache.MarkImportUsed("github.com/php-any/origami/data")
-	if len(paramNames) > 0 {
+	// 仅当存在固定参数需要转换时引入 fmt 和 utils
+	fixedCount := len(paramNames)
+	if isVariadic {
+		fixedCount = fixedCount - 1
+	}
+	if fixedCount > 0 {
 		fileCache.MarkImportUsed("fmt")
 		fileCache.MarkImportUsed("github.com/php-any/generator/utils")
 	}
 
-	// 参数类型转换
+	// 参数类型转换（可变参数仅转换固定部分）
 	if len(paramNames) > 0 {
-		for i, pName := range paramNames {
-			typeStr := getTypeString(paramTypes[i], NewFileCache())
-			// 替换包名为别名，但跳过标准库类型
-			paramType := paramTypes[i]
-			if paramType.Kind() == reflect.Ptr && paramType.Elem() != nil {
-				paramType = paramType.Elem()
-			}
-			if paramType.PkgPath() != "" && !isStandardLibrary(paramType.PkgPath()) {
-				originalPkgName := pkgBaseName(paramType.PkgPath())
-				if strings.Contains(typeStr, originalPkgName+".") {
-					typeStr = strings.ReplaceAll(typeStr, originalPkgName+".", importAlias+".")
-				}
-			}
-			// 标记标准库包为已使用
-			if paramType.PkgPath() != "" && isStandardLibrary(paramType.PkgPath()) {
-				fileCache.MarkImportUsed(paramType.PkgPath())
-			}
-			fmt.Fprintf(b, "\t%s, err := utils.ConvertFromIndex[%s](ctx, %d)\n", pName, typeStr, i)
-			fmt.Fprintf(b, "\tif err != nil { return nil, data.NewErrorThrow(nil, fmt.Errorf(\"参数转换失败: %%v\", err)) }\n")
+		endIdx := len(paramNames)
+		if isVariadic {
+			endIdx = endIdx - 1
 		}
+		// 从 importAlias 反推出原包短名（去掉 src 后缀）
+		origPkgName := ""
+		if strings.HasSuffix(importAlias, "src") {
+			origPkgName = strings.TrimSuffix(importAlias, "src")
+		}
+		writeParameterConversion(b, paramTypes, paramNames, endIdx, fileCache, origPkgName, importAlias)
 		b.WriteString("\n")
 	}
+
+	// 处理可变参数
+	origPkgName := ""
+	if strings.HasSuffix(importAlias, "src") {
+		origPkgName = strings.TrimSuffix(importAlias, "src")
+	}
+	writeVariadicParameterHandling(b, isVariadic, variadicElem, paramNames, fileCache, origPkgName, importAlias)
 
 	// 方法调用
 	sourceCall := "h.source"
@@ -94,7 +96,11 @@ func writeMethodImplementation(b *strings.Builder, typeName, methodName string, 
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			fmt.Fprintf(b, "%s", pName)
+			if isVariadic && i == len(paramNames)-1 {
+				fmt.Fprintf(b, "%s...", pName)
+			} else {
+				fmt.Fprintf(b, "%s", pName)
+			}
 		}
 		fmt.Fprintf(b, ")\n\treturn nil, nil\n")
 	} else if len(returnTypes) == 1 {
@@ -103,7 +109,11 @@ func writeMethodImplementation(b *strings.Builder, typeName, methodName string, 
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			fmt.Fprintf(b, "%s", pName)
+			if isVariadic && i == len(paramNames)-1 {
+				fmt.Fprintf(b, "%s...", pName)
+			} else {
+				fmt.Fprintf(b, "%s", pName)
+			}
 		}
 		fmt.Fprintf(b, ")\n")
 		if returnTypes[0].Kind() == reflect.Ptr && returnTypes[0].Elem().Kind() == reflect.Struct {
@@ -117,7 +127,11 @@ func writeMethodImplementation(b *strings.Builder, typeName, methodName string, 
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			fmt.Fprintf(b, "%s", pName)
+			if isVariadic && i == len(paramNames)-1 {
+				fmt.Fprintf(b, "%s...", pName)
+			} else {
+				fmt.Fprintf(b, "%s", pName)
+			}
 		}
 		fmt.Fprintf(b, ")\n\treturn data.NewArrayValue([]data.Value{data.NewAnyValue(ret0), data.NewAnyValue(ret1)}), nil\n")
 	}
@@ -159,7 +173,7 @@ func writeMethodImplementation(b *strings.Builder, typeName, methodName string, 
 }
 
 // analyzeMethodParams 分析方法参数
-func analyzeMethodParams(m reflect.Method, sourceIsPtr bool) ([]reflect.Type, []string) {
+func analyzeMethodParams(m reflect.Method, sourceIsPtr bool) ([]reflect.Type, []string, bool, reflect.Type) {
 	mt := m.Type
 	numIn := mt.NumIn()
 
@@ -178,7 +192,16 @@ func analyzeMethodParams(m reflect.Method, sourceIsPtr bool) ([]reflect.Type, []
 		paramNames = append(paramNames, fmt.Sprintf("param%d", i-startIndex))
 	}
 
-	return paramTypes, paramNames
+	isVariadic := mt.IsVariadic()
+	var variadicElem reflect.Type
+	if isVariadic && numIn-startIndex > 0 {
+		last := mt.In(numIn - 1)
+		if last.Kind() == reflect.Slice {
+			variadicElem = last.Elem()
+		}
+	}
+
+	return paramTypes, paramNames, isVariadic, variadicElem
 }
 
 // analyzeMethodReturns 分析方法返回值

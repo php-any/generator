@@ -3,6 +3,7 @@ package scr
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -45,9 +46,9 @@ func writeClassConstructor(b *strings.Builder, typeName, importAlias string, met
 	fmt.Fprintf(b, "func New%sClass() data.ClassStmt {\n", typeName)
 	fmt.Fprintf(b, "\treturn &%sClass{\n", typeName)
 	fmt.Fprintf(b, "\t\tsource: nil,\n")
-	for methodName := range methods {
-		lowerMethodName := lowerFirst(methodName)
-		fmt.Fprintf(b, "\t\t%s: &%s%sMethod{source: nil},\n", lowerMethodName, typeName, methodName)
+	for keyName, chosenMethod := range buildMethodFieldMapping(methods) {
+		safeName := sanitizeIdentifier(keyName)
+		fmt.Fprintf(b, "\t\t%s: &%s%sMethod{source: nil},\n", safeName, typeName, chosenMethod)
 	}
 	fmt.Fprintf(b, "\t}\n")
 	fmt.Fprintf(b, "}\n\n")
@@ -60,9 +61,9 @@ func writeClassConstructor(b *strings.Builder, typeName, importAlias string, met
 	}
 	fmt.Fprintf(b, "\treturn &%sClass{\n", typeName)
 	fmt.Fprintf(b, "\t\tsource: source,\n")
-	for methodName := range methods {
-		lowerMethodName := lowerFirst(methodName)
-		fmt.Fprintf(b, "\t\t%s: &%s%sMethod{source: source},\n", lowerMethodName, typeName, methodName)
+	for keyName, chosenMethod := range buildMethodFieldMapping(methods) {
+		safeName := sanitizeIdentifier(keyName)
+		fmt.Fprintf(b, "\t\t%s: &%s%sMethod{source: source},\n", safeName, typeName, chosenMethod)
 	}
 	fmt.Fprintf(b, "\t}\n")
 	fmt.Fprintf(b, "}\n\n")
@@ -87,9 +88,9 @@ func writeClassStruct(b *strings.Builder, typeName string, methods map[string]re
 	}
 
 	// 添加方法字段（小驼峰命名）
-	for methodName := range methods {
-		lowerMethodName := lowerFirst(methodName)
-		fmt.Fprintf(b, "\t%s data.Method\n", lowerMethodName)
+	for keyName := range buildMethodFieldMapping(methods) {
+		safeName := sanitizeIdentifier(keyName)
+		fmt.Fprintf(b, "\t%s data.Method\n", safeName)
 	}
 
 	b.WriteString("}\n\n")
@@ -144,9 +145,9 @@ func writeClassMethods(b *strings.Builder, typeName string, methods map[string]r
 func writeGetMethod(b *strings.Builder, typeName string, methods map[string]reflect.Method) {
 	fmt.Fprintf(b, "func (s *%sClass) GetMethod(name string) (data.Method, bool) {\n", typeName)
 	b.WriteString("\tswitch name {\n")
-	for methodName := range methods {
-		lowerMethodName := lowerFirst(methodName)
-		fmt.Fprintf(b, "\tcase \"%s\": return s.%s, true\n", lowerMethodName, lowerMethodName)
+	for keyName := range buildMethodFieldMapping(methods) {
+		safeName := sanitizeIdentifier(keyName)
+		fmt.Fprintf(b, "\tcase \"%s\": return s.%s, true\n", keyName, safeName)
 	}
 	b.WriteString("\t}\n\treturn nil, false\n}\n\n")
 }
@@ -156,20 +157,83 @@ func writeGetMethods(b *strings.Builder, typeName string, methods map[string]ref
 	fmt.Fprintf(b, "func (s *%sClass) GetMethods() []data.Method {\n", typeName)
 	b.WriteString("\treturn []data.Method{\n")
 	first := true
-	for methodName := range methods {
+	for keyName := range buildMethodFieldMapping(methods) {
 		if !first {
 			b.WriteString(",\n")
 		} else {
 			first = false
 		}
-		lowerMethodName := lowerFirst(methodName)
-		fmt.Fprintf(b, "\t\ts.%s", lowerMethodName)
+		safeName := sanitizeIdentifier(keyName)
+		fmt.Fprintf(b, "\t\ts.%s", safeName)
 	}
 
 	if len(methods) > 0 {
 		b.WriteString(",\n")
 	}
 	b.WriteString("\t}\n}\n\n")
+}
+
+// buildMethodFieldMapping 将方法集合映射为 字段键名->选中的方法名
+// 规则：
+// - 键名：首次出现的 lowerFirst(methodName)
+// - 归一键：strings.ToLower(键名)
+// - 冲突时选择“尾部连续大写字母计数”更大的方法名（偏向全大写缩写，如 RO）
+// - 保留首次出现的键名不变，仅替换映射的目标方法名
+func buildMethodFieldMapping(methods map[string]reflect.Method) map[string]string {
+    // 收集并排序，确保稳定性
+    names := make([]string, 0, len(methods))
+    for name := range methods { names = append(names, name) }
+    sort.Strings(names)
+
+    type group struct {
+        // 用于字段键名的候选（选择尾部连续大写更少者）
+        keyName   string
+        keyScore  int
+        // 用于绑定的方法名（同样选择尾部连续大写更少者，优先更“驼峰”的版本）
+        bestName  string
+        bestScore int
+    }
+    byNorm := make(map[string]*group)
+
+    for _, methodName := range names {
+        key := lowerFirst(methodName)
+        norm := strings.ToLower(key)
+        sc := countTrailingUpper(methodName)
+        if g, ok := byNorm[norm]; ok {
+            // 更新键名：更低的 score 更优（例如 Ro 比 RO 更低）
+            if sc < g.keyScore {
+                g.keyName = key
+                g.keyScore = sc
+            }
+            // 更新映射的方法名：更低的 score 更优（例如 Ro 比 RO 更低）
+            if sc < g.bestScore {
+                g.bestName = methodName
+                g.bestScore = sc
+            }
+        } else {
+            byNorm[norm] = &group{keyName: key, keyScore: sc, bestName: methodName, bestScore: sc}
+        }
+    }
+
+    result := make(map[string]string, len(byNorm))
+    for _, g := range byNorm {
+        result[g.keyName] = g.bestName
+    }
+    return result
+}
+
+// 计算方法名末尾连续大写字母数量
+func countTrailingUpper(s string) int {
+    cnt := 0
+    for i := len(s)-1; i >= 0; i-- {
+        c := s[i]
+        if c >= 'A' && c <= 'Z' {
+            cnt++
+            continue
+        }
+        break
+    }
+    return cnt
 }
 
 // writePropertyMethods 写入属性相关方法
@@ -210,6 +274,8 @@ func writePropertyMethods(b *strings.Builder, typeName string, structType reflec
 			fmt.Fprintf(b, "\t\treturn node.NewProperty(nil, \"%s\", \"public\", true, data.NewAnyValue(s.source.%s)), true\n",
 				fieldName, fieldName)
 		} else if isStructType(field.Type) {
+			// 使用 runtime.NewContextToDo，需要标记 runtime 导入
+			fileCache.MarkImportUsed("github.com/php-any/origami/runtime")
 			fmt.Fprintf(b, "\t\treturn node.NewProperty(nil, \"%s\", \"public\", true, data.NewClassValue(New%sClassFrom(s.source.%s), runtime.NewContextToDo())), true\n",
 				fieldName, getStructTypeName(field.Type), fieldName)
 		} else {
@@ -238,6 +304,8 @@ func writePropertyMethods(b *strings.Builder, typeName string, structType reflec
 			fmt.Fprintf(b, "\t\t\"%s\": node.NewProperty(nil, \"%s\", \"public\", true, data.NewAnyValue(nil)),\n",
 				fieldName, fieldName)
 		} else if isStructType(field.Type) {
+			// 使用 runtime.NewContextToDo，需要标记 runtime 导入
+			fileCache.MarkImportUsed("github.com/php-any/origami/runtime")
 			fmt.Fprintf(b, "\t\t\"%s\": node.NewProperty(nil, \"%s\", \"public\", true, data.NewClassValue(nil, runtime.NewContextToDo())),\n",
 				fieldName, fieldName)
 		} else {
