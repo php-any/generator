@@ -143,7 +143,7 @@ func generateClassFile(structType reflect.Type, allMethods map[string]reflect.Me
 	fileCache := NewFileCache()
 
 	// 构建类文件内容
-	classBody := buildClassFileBody(srcPkgPath, pkgName, typeName, allMethods, structType, pkgName, fileCache, cache.Config)
+	classBody := buildClassFileBody(srcPkgPath, pkgName, typeName, allMethods, structType, cache.Config.NamePrefix, fileCache, cache.Config)
 
 	// 输出文件
 	return emitFile(classFile, pkgName, classBody)

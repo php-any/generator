@@ -59,12 +59,19 @@ func writeFunctionImplementation(b *strings.Builder, namePrefix, funcName string
 
 	// 标记使用的导入
 	fileCache.MarkImportUsed("github.com/php-any/origami/data")
-	// 仅当存在固定参数需要转换时引入 fmt 和 utils
+	// 仅当存在非 context 的固定参数时引入 fmt 和 utils
 	fixedCount := len(paramNames)
 	if isVariadic {
 		fixedCount = fixedCount - 1
 	}
-	if fixedCount > 0 {
+	needsConvert := false
+	for i := 0; i < fixedCount; i++ {
+		if !isContextType(paramTypes[i]) {
+			needsConvert = true
+			break
+		}
+	}
+	if needsConvert {
 		fileCache.MarkImportUsed("fmt")
 		fileCache.MarkImportUsed("github.com/php-any/generator/utils")
 	}
@@ -82,7 +89,7 @@ func writeFunctionImplementation(b *strings.Builder, namePrefix, funcName string
 	// 处理可变参数
 	writeVariadicParameterHandling(b, isVariadic, variadicElem, paramNames, fileCache, origPkgName, importAlias)
 
-	// 函数调用
+	// 函数调用（context.Context 改为 ctx.GoContext()）
 	if len(returnTypes) == 0 {
 		fmt.Fprintf(b, "\t%s.%s(", importAlias, funcName)
 		for i, pName := range paramNames {
@@ -92,7 +99,11 @@ func writeFunctionImplementation(b *strings.Builder, namePrefix, funcName string
 			if isVariadic && i == len(paramNames)-1 {
 				fmt.Fprintf(b, "%s...", pName)
 			} else {
-				fmt.Fprintf(b, "%s", pName)
+				if i < len(paramTypes) && isContextType(paramTypes[i]) {
+					fmt.Fprintf(b, "ctx.GoContext()")
+				} else {
+					fmt.Fprintf(b, "%s", pName)
+				}
 			}
 		}
 		fmt.Fprintf(b, ")\n\treturn nil, nil\n")
@@ -105,7 +116,11 @@ func writeFunctionImplementation(b *strings.Builder, namePrefix, funcName string
 			if isVariadic && i == len(paramNames)-1 {
 				fmt.Fprintf(b, "%s...", pName)
 			} else {
-				fmt.Fprintf(b, "%s", pName)
+				if i < len(paramTypes) && isContextType(paramTypes[i]) {
+					fmt.Fprintf(b, "ctx.GoContext()")
+				} else {
+					fmt.Fprintf(b, "%s", pName)
+				}
 			}
 		}
 		fmt.Fprintf(b, ")\n")
@@ -115,7 +130,15 @@ func writeFunctionImplementation(b *strings.Builder, namePrefix, funcName string
 			fmt.Fprintf(b, "\treturn data.NewAnyValue(ret0), nil\n")
 		}
 	} else {
-		fmt.Fprintf(b, "\tret0, ret1 := %s.%s(", importAlias, funcName)
+		// 通用：支持任意个返回值（>=2）
+		b.WriteString("\t")
+		for i := range returnTypes {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "ret%d", i)
+		}
+		fmt.Fprintf(b, " := %s.%s(", importAlias, funcName)
 		for i, pName := range paramNames {
 			if i > 0 {
 				b.WriteString(", ")
@@ -123,10 +146,22 @@ func writeFunctionImplementation(b *strings.Builder, namePrefix, funcName string
 			if isVariadic && i == len(paramNames)-1 {
 				fmt.Fprintf(b, "%s...", pName)
 			} else {
-				fmt.Fprintf(b, "%s", pName)
+				if i < len(paramTypes) && isContextType(paramTypes[i]) {
+					fmt.Fprintf(b, "ctx.GoContext()")
+				} else {
+					fmt.Fprintf(b, "%s", pName)
+				}
 			}
 		}
-		fmt.Fprintf(b, ")\n\treturn data.NewArrayValue([]data.Value{data.NewAnyValue(ret0), data.NewAnyValue(ret1)}), nil\n")
+		b.WriteString(")\n")
+		b.WriteString("\treturn data.NewArrayValue([]data.Value{")
+		for i := range returnTypes {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "data.NewAnyValue(ret%d)", i)
+		}
+		b.WriteString("}), nil\n")
 	}
 
 	b.WriteString("}\n\n")
@@ -135,23 +170,37 @@ func writeFunctionImplementation(b *strings.Builder, namePrefix, funcName string
 	fmt.Fprintf(b, "func (h *%sFunction) GetName() string { return \"%s\\\\%s\" }\n", funcName, namePrefix, funcName)
 	fmt.Fprintf(b, "func (h *%sFunction) GetIsStatic() bool { return false }\n", funcName)
 
-	// 参数清单
+	// 参数清单（跳过 context.Context）
 	if len(paramNames) > 0 {
-		// 标记使用的导入
-		fileCache.MarkImportUsed("github.com/php-any/origami/node")
+		for i := range paramTypes {
+			if !isContextType(paramTypes[i]) {
+				fileCache.MarkImportUsed("github.com/php-any/origami/node")
+				break
+			}
+		}
 	}
 	fmt.Fprintf(b, "func (h *%sFunction) GetParams() []data.GetValue { return []data.GetValue{\n", funcName)
+	idx := 0
 	for i, paramName := range paramNames {
+		if isContextType(paramTypes[i]) {
+			continue
+		}
 		datExpr := getDataTypeExpr(paramTypes[i])
-		fmt.Fprintf(b, "\t\tnode.NewParameter(nil, \"%s\", %d, nil, %s),\n", paramName, i, datExpr)
+		fmt.Fprintf(b, "\t\tnode.NewParameter(nil, \"%s\", %d, nil, %s),\n", paramName, idx, datExpr)
+		idx++
 	}
 	fmt.Fprintf(b, "\t}\n}\n")
 
-	// 变量清单
+	// 变量清单（跳过 context.Context）
 	fmt.Fprintf(b, "func (h *%sFunction) GetVariables() []data.Variable { return []data.Variable{\n", funcName)
+	idx = 0
 	for i, paramName := range paramNames {
+		if isContextType(paramTypes[i]) {
+			continue
+		}
 		datExpr := getDataTypeExpr(paramTypes[i])
-		fmt.Fprintf(b, "\t\tnode.NewVariable(nil, \"%s\", %d, %s),\n", paramName, i, datExpr)
+		fmt.Fprintf(b, "\t\tnode.NewVariable(nil, \"%s\", %d, %s),\n", paramName, idx, datExpr)
+		idx++
 	}
 	fmt.Fprintf(b, "\t}\n}\n")
 

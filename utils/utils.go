@@ -11,7 +11,7 @@ func ConvertFromIndex[S any](ctx data.Context, index int) (S, error) {
 	v, _ := ctx.GetIndexValue(index)
 	switch opts := v.(type) {
 	case data.GetSource:
-		opt = opts.GetSource().(S)
+		return opts.GetSource().(S), nil
 	case *data.ClassValue:
 		if p, ok := opts.Class.(data.GetSource); ok {
 			// 检查 GetSource 返回的类型，如果是指针则解引用
@@ -23,7 +23,7 @@ func ConvertFromIndex[S any](ctx data.Context, index int) (S, error) {
 		}
 		return opt, fmt.Errorf("invalid options type: %T", opts)
 	case *data.AnyValue:
-		opt = opts.Value.(S)
+		return opts.Value.(S), nil
 	case *data.IntValue:
 		var a any
 		a, err := opts.AsInt()
@@ -54,21 +54,14 @@ func ConvertFromIndex[S any](ctx data.Context, index int) (S, error) {
 				return opt, nil
 			}
 		}
-	case *data.ArrayValue:
-		arg := make([]any, 0)
-		for _, v := range v.(*data.ArrayValue).Value {
-			arg = append(arg, v)
-		}
 	}
 
-	var a any
-	a = opt
-	switch a.(type) {
-	case int:
-		if opt, ok := a.(S); ok {
-			return opt, nil
-		}
-	}
+	//switch any(opt).(type) {
+	//case int:
+	//	if opt, ok := a.(S); ok {
+	//		return opt, nil
+	//	}
+	//}
 
 	return opt, errors.New("invalid options type")
 }
@@ -77,7 +70,7 @@ func Convert[S any](v data.Value) (S, error) {
 	var opt S
 	switch opts := v.(type) {
 	case data.GetSource:
-		opt = opts.GetSource().(S)
+		return opts.GetSource().(S), nil
 	case *data.ClassValue:
 		if p, ok := opts.Class.(data.GetSource); ok {
 			// 检查 GetSource 返回的类型，如果是指针则解引用
@@ -89,7 +82,7 @@ func Convert[S any](v data.Value) (S, error) {
 		}
 		return opt, fmt.Errorf("invalid options type: %T", opts)
 	case *data.AnyValue:
-		opt = opts.Value.(S)
+		return opts.Value.(S), nil
 	case *data.IntValue:
 		var a any
 		a, err := opts.AsInt()
@@ -119,11 +112,6 @@ func Convert[S any](v data.Value) (S, error) {
 			if opt, ok := a.(S); ok {
 				return opt, nil
 			}
-		}
-	case *data.ArrayValue:
-		arg := make([]any, 0)
-		for _, v := range v.(*data.ArrayValue).Value {
-			arg = append(arg, v)
 		}
 	}
 

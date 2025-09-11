@@ -12,6 +12,12 @@ func getTypeString(t reflect.Type, fileCache *FileCache) string {
 		return "interface{}"
 	}
 
+	// 具名类型（含包路径与类型名）优先返回“包名.类型名”，以保留别名/定义类型
+	if t.PkgPath() != "" && t.Name() != "" {
+		pkgName := pkgBaseName(t.PkgPath())
+		return pkgName + "." + t.Name()
+	}
+
 	switch t.Kind() {
 	case reflect.Ptr:
 		return "*" + getTypeString(t.Elem(), fileCache)
@@ -90,6 +96,17 @@ func getTypeString(t reflect.Type, fileCache *FileCache) string {
 	}
 }
 
+// isContextType 判断是否为 context.Context
+func isContextType(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return t.PkgPath() == "context" && t.Name() == "Context"
+}
+
 // isStandardLibrary 检查包路径是否属于标准库
 func isStandardLibrary(pkgPath string) bool {
 	// 标准库包路径不包含域名，直接以包名开头
@@ -109,24 +126,24 @@ func lowerFirst(s string) string {
 
 // sanitizeIdentifier 将可能与 Go 关键字或内部保留名冲突的标识符做安全化处理
 func sanitizeIdentifier(s string) string {
-    keywords := map[string]struct{}{
-        "break": {}, "default": {}, "func": {}, "interface": {}, "select": {},
-        "case": {}, "defer": {}, "go": {}, "map": {}, "struct": {},
-        "chan": {}, "else": {}, "goto": {}, "package": {}, "switch": {},
-        "const": {}, "fallthrough": {}, "if": {}, "range": {}, "type": {},
-        "continue": {}, "for": {}, "import": {}, "return": {}, "var": {},
-    }
-    // 内部已使用字段名
-    reserved := map[string]struct{}{
-        "source": {},
-    }
-    if _, ok := keywords[s]; ok {
-        return "_" + s
-    }
-    if _, ok := reserved[s]; ok {
-        return s + "_"
-    }
-    return s
+	keywords := map[string]struct{}{
+		"break": {}, "default": {}, "func": {}, "interface": {}, "select": {},
+		"case": {}, "defer": {}, "go": {}, "map": {}, "struct": {},
+		"chan": {}, "else": {}, "goto": {}, "package": {}, "switch": {},
+		"const": {}, "fallthrough": {}, "if": {}, "range": {}, "type": {},
+		"continue": {}, "for": {}, "import": {}, "return": {}, "var": {},
+	}
+	// 内部已使用字段名
+	reserved := map[string]struct{}{
+		"source": {},
+	}
+	if _, ok := keywords[s]; ok {
+		return "_" + s
+	}
+	if _, ok := reserved[s]; ok {
+		return s + "_"
+	}
+	return s
 }
 
 // writeVariadicInterfaceUnpack 生成 ...interface{} 形参的展开逻辑
@@ -146,28 +163,32 @@ func writeVariadicInterfaceUnpack(b *strings.Builder, paramName string, index in
 
 // markTypeImportsUsed 根据实际类型递归标记需要的导入为已使用
 func markTypeImportsUsed(t reflect.Type, fileCache *FileCache, srcPkgPath string) {
-    if t == nil {
-        return
-    }
-    switch t.Kind() {
-    case reflect.Ptr, reflect.Slice, reflect.Array, reflect.Chan:
-        markTypeImportsUsed(t.Elem(), fileCache, srcPkgPath)
-    case reflect.Map:
-        markTypeImportsUsed(t.Key(), fileCache, srcPkgPath)
-        markTypeImportsUsed(t.Elem(), fileCache, srcPkgPath)
-    }
-    if t.PkgPath() != "" {
-        if srcPkgPath != "" && t.PkgPath() == srcPkgPath {
-            fileCache.MarkImportUsed(srcPkgPath)
-        } else {
-            fileCache.MarkImportUsed(t.PkgPath())
-        }
-    }
+	if t == nil {
+		return
+	}
+	switch t.Kind() {
+	case reflect.Ptr, reflect.Slice, reflect.Array, reflect.Chan:
+		markTypeImportsUsed(t.Elem(), fileCache, srcPkgPath)
+	case reflect.Map:
+		markTypeImportsUsed(t.Key(), fileCache, srcPkgPath)
+		markTypeImportsUsed(t.Elem(), fileCache, srcPkgPath)
+	}
+	if t.PkgPath() != "" {
+		if srcPkgPath != "" && t.PkgPath() == srcPkgPath {
+			fileCache.MarkImportUsed(srcPkgPath)
+		} else {
+			fileCache.MarkImportUsed(t.PkgPath())
+		}
+	}
 }
 
 // writeParameterConversion 写入参数类型转换代码
 func writeParameterConversion(b *strings.Builder, paramTypes []reflect.Type, paramNames []string, endIdx int, fileCache *FileCache, origPkgName, importAlias string) {
 	for i := 0; i < endIdx; i++ {
+		// 特殊处理：context.Context 不从 ctx 读取，直接在调用处使用 ctx.GoContext()
+		if isContextType(paramTypes[i]) {
+			continue
+		}
 		pName := paramNames[i]
 		typeStr := getTypeString(paramTypes[i], fileCache)
 		// 统一替换源包名为别名（适配切片/指针/数组/映射等复杂嵌套）
