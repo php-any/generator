@@ -107,6 +107,72 @@ func isContextType(t reflect.Type) bool {
 	return t.PkgPath() == "context" && t.Name() == "Context"
 }
 
+// isTypeAlias 判断是否为类型别名（有包路径和名称，但底层类型不同）
+func isTypeAlias(t reflect.Type) bool {
+	if t == nil || t.PkgPath() == "" || t.Name() == "" {
+		return false
+	}
+	// 解引用指针
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	// 检查是否为具名类型且不是基础类型
+	underlying := t
+	for underlying.Kind() == reflect.Ptr {
+		underlying = underlying.Elem()
+	}
+	// 如果是具名类型且底层类型与自身不同，则认为是别名
+	return underlying.PkgPath() != "" && underlying.Name() != "" &&
+		(underlying.Kind() == reflect.Int || underlying.Kind() == reflect.Int64 ||
+			underlying.Kind() == reflect.Float32 || underlying.Kind() == reflect.Float64 ||
+			underlying.Kind() == reflect.String || underlying.Kind() == reflect.Bool)
+}
+
+// getUnderlyingTypeString 获取类型的底层类型字符串
+func getUnderlyingTypeString(t reflect.Type, fileCache *FileCache) string {
+	if t == nil {
+		return "interface{}"
+	}
+	// 解引用指针
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	// 返回底层类型
+	switch t.Kind() {
+	case reflect.Int:
+		return "int"
+	case reflect.Int8:
+		return "int8"
+	case reflect.Int16:
+		return "int16"
+	case reflect.Int32:
+		return "int32"
+	case reflect.Int64:
+		return "int64"
+	case reflect.Uint:
+		return "uint"
+	case reflect.Uint8:
+		return "uint8"
+	case reflect.Uint16:
+		return "uint16"
+	case reflect.Uint32:
+		return "uint32"
+	case reflect.Uint64:
+		return "uint64"
+	case reflect.Float32:
+		return "float32"
+	case reflect.Float64:
+		return "float64"
+	case reflect.String:
+		return "string"
+	case reflect.Bool:
+		return "bool"
+	default:
+		// 对于复杂类型，使用原来的逻辑
+		return getTypeString(t, fileCache)
+	}
+}
+
 // isStandardLibrary 检查包路径是否属于标准库
 func isStandardLibrary(pkgPath string) bool {
 	// 标准库包路径不包含域名，直接以包名开头
@@ -198,8 +264,17 @@ func writeParameterConversion(b *strings.Builder, paramTypes []reflect.Type, par
 		}
 		// 根据真实类型自动标记导入（避免硬编码包名）
 		markTypeImportsUsed(paramTypes[i], fileCache, "")
-		fmt.Fprintf(b, "\t%s, err := utils.ConvertFromIndex[%s](ctx, %d)\n", pName, typeStr, ctxIndex)
-		fmt.Fprintf(b, "\tif err != nil { return nil, data.NewErrorThrow(nil, fmt.Errorf(\"参数转换失败: %%v\", err)) }\n")
+
+		// 检查是否为类型别名，需要两步转换
+		if isTypeAlias(paramTypes[i]) {
+			underlyingTypeStr := getUnderlyingTypeString(paramTypes[i], fileCache)
+			fmt.Fprintf(b, "\t%sTemp, err := utils.ConvertFromIndex[%s](ctx, %d)\n", pName, underlyingTypeStr, ctxIndex)
+			fmt.Fprintf(b, "\tif err != nil { return nil, data.NewErrorThrow(nil, fmt.Errorf(\"参数转换失败: %%v\", err)) }\n")
+			fmt.Fprintf(b, "\t%s := %s(%sTemp)\n", pName, typeStr, pName)
+		} else {
+			fmt.Fprintf(b, "\t%s, err := utils.ConvertFromIndex[%s](ctx, %d)\n", pName, typeStr, ctxIndex)
+			fmt.Fprintf(b, "\tif err != nil { return nil, data.NewErrorThrow(nil, fmt.Errorf(\"参数转换失败: %%v\", err)) }\n")
+		}
 		ctxIndex++
 	}
 	return ctxIndex
