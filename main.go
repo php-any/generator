@@ -2,8 +2,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/redis/go-redis/v9"
 	"os"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/php-any/generator/scr"
 )

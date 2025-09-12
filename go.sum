@@ -1,3 +1,5 @@
+filippo.io/edwards25519 v1.1.0 h1:FNf4tywRC1HmFuKW5xopWpigGjJKiJSV0Cqo0cJWDaA=
+filippo.io/edwards25519 v1.1.0/go.mod h1:BxyFTGdWcka3PhytdK4V28tE5sGfRvvvRV7EaN4VDT4=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=
@@ -6,7 +8,13 @@ github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UF
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f h1:lO4WD4F/rVNCu3HqELle0jiPLLBs70cWOduZpkS1E78=
 github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f/go.mod h1:cuUVRXasLTGF7a8hSLbxyZXjz+1KgoB3wDUb6vlszIc=
+github.com/go-sql-driver/mysql v1.9.3 h1:U/N249h2WzJ3Ukj8SowVFjdtZKfu9vlLZxjPXV1aweo=
+github.com/go-sql-driver/mysql v1.9.3/go.mod h1:qn46aNg1333BRMNU69Lq93t8du/dwxI64Gl8i5p1WMU=
 github.com/php-any/origami v0.0.9 h1:xfzZrsI+qTQzzefr8zFwDx7N4NChtZ7mGIjHDDYDjhQ=
 github.com/php-any/origami v0.0.9/go.mod h1:wT5GuOxvJrjkVTrV38lkJbUngHS1Jl6araF5fFgXSI0=
+github.com/php-any/origami v0.0.10 h1:Jtpe1Sq+T0GoZTMPKJlXKQDozxxL7jWFmerc7JyWKXs=
+github.com/php-any/origami v0.0.10/go.mod h1:bVF4qzYr/KGfmaIbebpty3XlFzi7vXujlkVNtLp3Mdk=
+github.com/php-any/origami v0.0.11-0.20250912083343-29c71fdaa427 h1:t5CnxHrrVcri50H1FlNZkRew9RAkcxr4pbdnc2HUCBo=
+github.com/php-any/origami v0.0.11-0.20250912083343-29c71fdaa427/go.mod h1:bVF4qzYr/KGfmaIbebpty3XlFzi7vXujlkVNtLp3Mdk=
 github.com/redis/go-redis/v9 v9.12.1 h1:k5iquqv27aBtnTm2tIkROUDp8JBXhXZIVu1InSgvovg=
 github.com/redis/go-redis/v9 v9.12.1/go.mod h1:huWgSWd8mW6+m0VPhJjSSQ+d6Nh1VICQ6Q5lHuCH/Iw=

@@ -17,6 +17,15 @@ func collectClassImports(srcPkgPath, pkgName string, methods map[string]reflect.
 	fileCache.AddImport("github.com/php-any/origami/data", "data")
 	fileCache.AddImport("github.com/php-any/origami/node", "node")
 	fileCache.AddImport("github.com/php-any/origami/runtime", "runtime")
+	// 新增：errors 与 utils 供 SetProperty/校验按需使用
+	fileCache.AddImport("errors", "")
+	fileCache.AddImport("time", "")
+	fileCache.AddImport("github.com/php-any/generator/utils", "utils")
+
+	// 收集结构体字段需要的导入（只收集直接字段类型，避免过度递归）
+	if structType != nil {
+		collectStructFieldImports(structType, srcPkgPath, fileCache, config)
+	}
 }
 
 // collectMethodImportsToCache 收集方法文件需要的导入包到缓存
@@ -31,6 +40,9 @@ func collectMethodImportsToCache(srcPkgPath, pkgName string, paramTypes []reflec
 	fileCache.AddImport("github.com/php-any/origami/node", "node")
 	fileCache.AddImport("fmt", "")
 	fileCache.AddImport("github.com/php-any/generator/utils", "utils")
+	// 新增：errors 供参数校验按需使用
+	fileCache.AddImport("errors", "")
+	fileCache.AddImport("time", "")
 
 	// 收集标准库和第三方包的导入
 	allTypes := append(paramTypes, returnTypes...)
@@ -92,6 +104,8 @@ func collectFunctionImportsToCache(srcPkgPath, pkgName string, paramTypes []refl
 	fileCache.AddImport("github.com/php-any/origami/node", "node")
 	fileCache.AddImport("fmt", "")
 	fileCache.AddImport("github.com/php-any/generator/utils", "utils")
+	// 新增：errors 供参数校验按需使用
+	fileCache.AddImport("errors", "")
 }
 
 // writeImportsFromCache 从缓存写入导入
@@ -143,6 +157,15 @@ func writeImports(b *strings.Builder, imports map[string]string) {
 
 // collectStructFieldImports 收集结构体字段的导入
 func collectStructFieldImports(structType reflect.Type, srcPkgPath string, fileCache *FileCache, config *Config) {
+	if structType == nil {
+		return
+	}
+	for structType.Kind() == reflect.Ptr {
+		structType = structType.Elem()
+	}
+	if structType.Kind() != reflect.Struct {
+		return
+	}
 	for i := 0; i < structType.NumField(); i++ {
 		field := structType.Field(i)
 		collectTypeImports(field.Type, srcPkgPath, fileCache, config)
@@ -206,6 +229,16 @@ func collectTypeImportsWithVisited(t reflect.Type, srcPkgPath string, fileCache 
 		collectTypeImportsWithVisited(t.Elem(), srcPkgPath, fileCache, config, visited)
 	case reflect.Chan:
 		collectTypeImportsWithVisited(t.Elem(), srcPkgPath, fileCache, config, visited)
+	case reflect.Func:
+		// 处理函数类型的参数和返回值
+		numIn := t.NumIn()
+		for i := 0; i < numIn; i++ {
+			collectTypeImportsWithVisited(t.In(i), srcPkgPath, fileCache, config, visited)
+		}
+		numOut := t.NumOut()
+		for i := 0; i < numOut; i++ {
+			collectTypeImportsWithVisited(t.Out(i), srcPkgPath, fileCache, config, visited)
+		}
 	case reflect.Struct, reflect.Interface:
 		if t.PkgPath() != "" && t.PkgPath() != srcPkgPath {
 			// 检查是否在黑名单中
@@ -220,7 +253,13 @@ func collectTypeImportsWithVisited(t reflect.Type, srcPkgPath string, fileCache 
 			}
 		}
 	default:
-		// 基本类型不需要导入
+		// 处理其他具名类型（如 time.Duration）
+		if t.PkgPath() != "" && t.PkgPath() != srcPkgPath {
+			// 检查是否在黑名单中
+			if config != nil && !isBlacklistedPackage(t.PkgPath(), config) {
+				fileCache.AddImport(t.PkgPath(), pkgBaseName(t.PkgPath()))
+			}
+		}
 	}
 }
 

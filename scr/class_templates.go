@@ -315,6 +315,9 @@ func writePropertyMethods(b *strings.Builder, typeName string, structType reflec
 	}
 	fmt.Fprintf(b, "\t}\n")
 	fmt.Fprintf(b, "}\n\n")
+
+	// SetProperty 方法
+	writeSetPropertyMethod(b, typeName, structType, importAlias, config, fileCache)
 }
 
 // getStructTypeName 获取结构体类型名称
@@ -345,4 +348,112 @@ func isBlacklistedType(t reflect.Type, config *Config) bool {
 	}
 
 	return false
+}
+
+// writeSetPropertyMethod 生成 SetProperty 方法
+func writeSetPropertyMethod(b *strings.Builder, typeName string, structType reflect.Type, importAlias string, config *Config, fileCache *FileCache) {
+	// 标记使用的导入
+	fileCache.MarkImportUsed("github.com/php-any/origami/data")
+	fileCache.MarkImportUsed("errors")
+
+	fmt.Fprintf(b, "func (s *%sClass) SetProperty(name string, value data.Value) data.Control {\n", typeName)
+	fmt.Fprintf(b, "\tif s.source == nil {\n")
+	fmt.Fprintf(b, "\t\treturn data.NewErrorThrow(nil, errors.New(\"无法设置属性，source 为 nil\"))\n")
+	fmt.Fprintf(b, "\t}\n\n")
+
+	if structType == nil || structType.Kind() != reflect.Struct || structType.NumField() == 0 {
+		// 无字段时返回属性不存在错误
+		fmt.Fprintf(b, "\treturn data.NewErrorThrow(nil, errors.New(\"属性不存在: \" + name))\n")
+		fmt.Fprintf(b, "}\n\n")
+		return
+	}
+
+	fmt.Fprintf(b, "\tswitch name {\n")
+	for i := 0; i < structType.NumField(); i++ {
+		field := structType.Field(i)
+		fieldName := field.Name
+
+		// 跳过小写开头的私有字段
+		if !IsExportedType(fieldName) {
+			continue
+		}
+
+		fmt.Fprintf(b, "\tcase \"%s\":\n", fieldName)
+
+		// 获取字段类型
+		fieldType := field.Type
+
+		// 标记字段类型的包为已使用
+		MarkTypePackageUsed(fieldType, fileCache)
+
+		// 处理指针类型
+		if fieldType.Kind() == reflect.Ptr {
+			elemType := fieldType.Elem()
+			// 按需标记 utils 导入（仅当生成 Convert 时）
+			fileCache.MarkImportUsed("github.com/php-any/generator/utils")
+			fmt.Fprintf(b, "\t\tval, err := utils.Convert[%s](value)\n", getTypeString(elemType, fileCache))
+			fmt.Fprintf(b, "\t\tif err != nil {\n")
+			fmt.Fprintf(b, "\t\t\treturn data.NewErrorThrow(nil, err)\n")
+			fmt.Fprintf(b, "\t\t}\n")
+			fmt.Fprintf(b, "\t\tconverted := new(%s)\n", getTypeString(elemType, fileCache))
+			fmt.Fprintf(b, "\t\t*converted = val\n")
+			fmt.Fprintf(b, "\t\ts.source.%s = converted\n", fieldName)
+		} else {
+			// 按需标记 utils 导入（仅当生成 Convert 时）
+			fileCache.MarkImportUsed("github.com/php-any/generator/utils")
+			fmt.Fprintf(b, "\t\tval, err := utils.Convert[%s](value)\n", getTypeString(fieldType, fileCache))
+			fmt.Fprintf(b, "\t\tif err != nil {\n")
+			fmt.Fprintf(b, "\t\t\treturn data.NewErrorThrow(nil, err)\n")
+			fmt.Fprintf(b, "\t\t}\n")
+			fmt.Fprintf(b, "\t\ts.source.%s = val\n", fieldName)
+		}
+		fmt.Fprintf(b, "\t\treturn nil\n")
+	}
+	fmt.Fprintf(b, "\tdefault:\n")
+	fmt.Fprintf(b, "\t\treturn data.NewErrorThrow(nil, errors.New(\"属性不存在: \" + name))\n")
+	fmt.Fprintf(b, "\t}\n")
+	fmt.Fprintf(b, "}\n\n")
+}
+
+// MarkTypePackageUsed 标记类型使用的包为已使用
+func MarkTypePackageUsed(t reflect.Type, fileCache *FileCache) {
+	if t == nil || fileCache == nil {
+		return
+	}
+
+	// 处理指针类型
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	// 处理复合类型
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array:
+		MarkTypePackageUsed(t.Elem(), fileCache)
+	case reflect.Map:
+		MarkTypePackageUsed(t.Key(), fileCache)
+		MarkTypePackageUsed(t.Elem(), fileCache)
+	case reflect.Chan:
+		MarkTypePackageUsed(t.Elem(), fileCache)
+	case reflect.Func:
+		// 处理函数类型的参数和返回值
+		numIn := t.NumIn()
+		for i := 0; i < numIn; i++ {
+			MarkTypePackageUsed(t.In(i), fileCache)
+		}
+		numOut := t.NumOut()
+		for i := 0; i < numOut; i++ {
+			MarkTypePackageUsed(t.Out(i), fileCache)
+		}
+	case reflect.Interface, reflect.Struct:
+		// 处理具名类型（包括 time.Duration 等）
+		if t.PkgPath() != "" {
+			fileCache.MarkImportUsed(t.PkgPath())
+		}
+	default:
+		// 处理其他具名类型
+		if t.PkgPath() != "" {
+			fileCache.MarkImportUsed(t.PkgPath())
+		}
+	}
 }

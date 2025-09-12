@@ -12,8 +12,15 @@ func getTypeString(t reflect.Type, fileCache *FileCache) string {
 		return "interface{}"
 	}
 
-	// 具名类型（含包路径与类型名）优先返回“包名.类型名”，以保留别名/定义类型
+	// 具名类型（含包路径与类型名）优先返回"包名.类型名"，以保留别名/定义类型
 	if t.PkgPath() != "" && t.Name() != "" {
+		// 优先使用 FileCache 中的别名
+		if fileCache != nil {
+			if alias, exists := fileCache.Imports[t.PkgPath()]; exists && alias != "" {
+				return alias + "." + t.Name()
+			}
+		}
+		// 回退到包名
 		pkgName := pkgBaseName(t.PkgPath())
 		return pkgName + "." + t.Name()
 	}
