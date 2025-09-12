@@ -182,8 +182,9 @@ func markTypeImportsUsed(t reflect.Type, fileCache *FileCache, srcPkgPath string
 	}
 }
 
-// writeParameterConversion 写入参数类型转换代码
-func writeParameterConversion(b *strings.Builder, paramTypes []reflect.Type, paramNames []string, endIdx int, fileCache *FileCache, origPkgName, importAlias string) {
+// writeParameterConversion 写入参数类型转换代码，返回下一个 ctx 索引
+func writeParameterConversion(b *strings.Builder, paramTypes []reflect.Type, paramNames []string, endIdx int, fileCache *FileCache, origPkgName, importAlias string) int {
+	ctxIndex := 0
 	for i := 0; i < endIdx; i++ {
 		// 特殊处理：context.Context 不从 ctx 读取，直接在调用处使用 ctx.GoContext()
 		if isContextType(paramTypes[i]) {
@@ -197,20 +198,22 @@ func writeParameterConversion(b *strings.Builder, paramTypes []reflect.Type, par
 		}
 		// 根据真实类型自动标记导入（避免硬编码包名）
 		markTypeImportsUsed(paramTypes[i], fileCache, "")
-		fmt.Fprintf(b, "\t%s, err := utils.ConvertFromIndex[%s](ctx, %d)\n", pName, typeStr, i)
+		fmt.Fprintf(b, "\t%s, err := utils.ConvertFromIndex[%s](ctx, %d)\n", pName, typeStr, ctxIndex)
 		fmt.Fprintf(b, "\tif err != nil { return nil, data.NewErrorThrow(nil, fmt.Errorf(\"参数转换失败: %%v\", err)) }\n")
+		ctxIndex++
 	}
+	return ctxIndex
 }
 
-// writeVariadicParameterHandling 写入可变参数处理代码
-func writeVariadicParameterHandling(b *strings.Builder, isVariadic bool, variadicElem reflect.Type, paramNames []string, fileCache *FileCache, origPkgName, importAlias string) {
+// writeVariadicParameterHandling 写入可变参数处理代码（提供起始 ctx 索引）
+func writeVariadicParameterHandling(b *strings.Builder, isVariadic bool, variadicElem reflect.Type, paramNames []string, fileCache *FileCache, origPkgName, importAlias string, startIndex int) {
 	if !isVariadic || variadicElem == nil {
 		return
 	}
 
 	if variadicElem.Kind() == reflect.Interface && variadicElem.PkgPath() == "" && variadicElem.Name() == "" {
 		// ...interface{}
-		writeVariadicInterfaceUnpack(b, paramNames[len(paramNames)-1], len(paramNames)-1)
+		writeVariadicInterfaceUnpack(b, paramNames[len(paramNames)-1], startIndex)
 		b.WriteString("\n")
 	} else {
 		// 通用具体类型：统一使用 utils.Convert[T]
@@ -221,7 +224,7 @@ func writeVariadicParameterHandling(b *strings.Builder, isVariadic bool, variadi
 			elemTypeStr = strings.ReplaceAll(elemTypeStr, origPkgName+".", importAlias+".")
 		}
 		fmt.Fprintf(b, "\t%s := make([]%s, 0)\n", varArgName, elemTypeStr)
-		fmt.Fprintf(b, "\tv, _ := ctx.GetIndexValue(%d)\n", len(paramNames)-1)
+		fmt.Fprintf(b, "\tv, _ := ctx.GetIndexValue(%d)\n", startIndex)
 		fmt.Fprintf(b, "\tif av, ok := v.(*data.ArrayValue); ok {\n")
 		fmt.Fprintf(b, "\t\tfor _, avv := range av.Value {\n")
 		fmt.Fprintf(b, "\t\t\tif vv, err := utils.Convert[%s](avv); err == nil { %s = append(%s, vv) }\n", elemTypeStr, varArgName, varArgName)

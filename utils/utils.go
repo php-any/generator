@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/php-any/origami/data"
+	"time"
 )
 
 func ConvertFromIndex[S any](ctx data.Context, index int) (S, error) {
@@ -56,14 +57,13 @@ func ConvertFromIndex[S any](ctx data.Context, index int) (S, error) {
 		}
 	}
 
-	//switch any(opt).(type) {
-	//case int:
-	//	if opt, ok := a.(S); ok {
-	//		return opt, nil
-	//	}
-	//}
+	switch any(opt).(type) {
+	case time.Duration:
+		i, err := v.(data.AsInt).AsInt()
+		return any(time.Duration(i)).(S), err
+	}
 
-	return opt, errors.New("invalid options type")
+	return opt, errors.New("无法自动转换类型, 比如类型别名就无法自动转换, 请手动处理")
 }
 
 func Convert[S any](v data.Value) (S, error) {

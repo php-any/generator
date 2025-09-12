@@ -76,18 +76,19 @@ func writeFunctionImplementation(b *strings.Builder, namePrefix, funcName string
 		fileCache.MarkImportUsed("github.com/php-any/generator/utils")
 	}
 
-	// 参数类型转换（可变参数仅转换固定部分）
+	// 参数类型转换（可变参数仅转换固定部分；跳过 context.Context）
+	nextIndex := 0
 	if len(paramNames) > 0 {
 		endIdx := len(paramNames)
 		if isVariadic {
 			endIdx = endIdx - 1
 		}
-		writeParameterConversion(b, paramTypes, paramNames, endIdx, fileCache, origPkgName, importAlias)
+		nextIndex = writeParameterConversion(b, paramTypes, paramNames, endIdx, fileCache, origPkgName, importAlias)
 		b.WriteString("\n")
 	}
 
-	// 处理可变参数
-	writeVariadicParameterHandling(b, isVariadic, variadicElem, paramNames, fileCache, origPkgName, importAlias)
+	// 处理可变参数（使用实际起始索引）
+	writeVariadicParameterHandling(b, isVariadic, variadicElem, paramNames, fileCache, origPkgName, importAlias, nextIndex)
 
 	// 函数调用（context.Context 改为 ctx.GoContext()）
 	if len(returnTypes) == 0 {

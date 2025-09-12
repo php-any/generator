@@ -74,6 +74,7 @@ func writeMethodImplementation(b *strings.Builder, typeName, methodName string, 
 	}
 
 	// 参数类型转换（可变参数仅转换固定部分）
+	nextIndex := 0
 	if len(paramNames) > 0 {
 		endIdx := len(paramNames)
 		if isVariadic {
@@ -84,16 +85,16 @@ func writeMethodImplementation(b *strings.Builder, typeName, methodName string, 
 		if strings.HasSuffix(importAlias, "src") {
 			origPkgName = strings.TrimSuffix(importAlias, "src")
 		}
-		writeParameterConversion(b, paramTypes, paramNames, endIdx, fileCache, origPkgName, importAlias)
+		nextIndex = writeParameterConversion(b, paramTypes, paramNames, endIdx, fileCache, origPkgName, importAlias)
 		b.WriteString("\n")
 	}
 
-	// 处理可变参数
+	// 处理可变参数（使用实际起始索引）
 	origPkgName := ""
 	if strings.HasSuffix(importAlias, "src") {
 		origPkgName = strings.TrimSuffix(importAlias, "src")
 	}
-	writeVariadicParameterHandling(b, isVariadic, variadicElem, paramNames, fileCache, origPkgName, importAlias)
+	writeVariadicParameterHandling(b, isVariadic, variadicElem, paramNames, fileCache, origPkgName, importAlias, nextIndex)
 
 	// 方法调用（context.Context 改为 ctx.GoContext()）
 	sourceCall := "h.source"
